@@ -1,0 +1,56 @@
+{% extends 'base.html' %}
+
+{% block title %}Cierre de Caja{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Cierre de corte</h3>
+            </div>
+            <div class="card-body">
+                <p><strong>Corte:</strong> {{ corte.fecha }}</p>
+                {% if form.errors %}
+                    <div class="alert alert-danger">Por favor corrige los errores del formulario.</div>
+                {% endif %}
+                <form method="post" novalidate>
+                    {% csrf_token %}
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">{{ form.responsable_cierre.label_tag }}{{ form.responsable_cierre }}</div>
+                        <div class="col-md-6">{{ form.fecha_cierre.label_tag }}{{ form.fecha_cierre }}</div>
+                    </div>
+                    <h5>Resumen por divisa</h5>
+                    <div class="table-responsive">
+                        <table class="table table-bordered mb-3">
+                            <thead>
+                                <tr>
+                                    <th>Divisa</th>
+                                    <th>Saldo inicial</th>
+                                    <th>Saldo esperado</th>
+                                    <th>Saldo físico</th>
+                                    <th>Diferencia</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for saldo in saldos %}
+                                    <tr>
+                                        <td>{{ saldo.divisa.codigo }}</td>
+                                        <td>{{ saldo.saldo_inicial }}</td>
+                                        <td>{{ saldo.saldo_esperado }}</td>
+                                        <td>
+                                            <input type="number" step="0.01" name="fisico_{{ saldo.id }}" class="form-control" value="{{ saldo.saldo_fisico }}">
+                                        </td>
+                                        <td>{{ saldo.diferencia|default:'-' }}</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <button type="submit" class="btn btn-danger">Cerrar corte</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

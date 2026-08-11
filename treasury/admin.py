@@ -1,0 +1,21 @@
+from django.contrib import admin
+from treasury.models import *
+
+admin.site.register(Divisa)
+admin.site.register(TipoCambio)
+admin.site.register(CorteCaja)
+admin.site.register(SaldoCaja)
+admin.site.register(MovimientoTesoreria)
+admin.site.register(ConfiguracionFolio)
+admin.site.register(MovimientoDivisa)
+admin.site.register(MovimientoArchivo)
+admin.site.register(Denominacion)
+admin.site.register(ArqueoCaja)
+admin.site.register(ArqueoDivisa)
+admin.site.register(ArqueoConteo)
+admin.site.register(Rancho)
+admin.site.register(Puesto)
+admin.site.register(Banco)
+admin.site.register(Empleado)
+admin.site.register(NominaSemanal)
+admin.site.register(NominaDetalle)

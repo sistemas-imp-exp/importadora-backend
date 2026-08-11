@@ -1,0 +1,26 @@
+# Entornos virtuales
+venv/
+venv_imp/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Django
+db.sqlite3
+db.sqlite3-journal
+/staticfiles/
+/media/
+*.log
+
+# Secretos / configuración local
+.env
+.env.*
+!.env.example
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/

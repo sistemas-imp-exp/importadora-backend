@@ -1,0 +1,100 @@
+{% extends 'base.html' %}
+
+{% block title %}Consulta de Movimientos{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Consulta de movimientos</h3>
+            </div>
+            <div class="card-body">
+                <form method="get" class="row g-3 mb-3">
+                    <div class="col-md-2">
+                        <label class="form-label">Fecha</label>
+                        <input type="date" name="fecha" class="form-control" value="{{ filtros.fecha }}">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Folio</label>
+                        <input type="text" name="folio" class="form-control" value="{{ filtros.folio }}">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Tipo</label>
+                        <select name="tipo" class="form-select">
+                            <option value="">Todos</option>
+                            <option value="I" {% if filtros.tipo == 'I' %}selected{% endif %}>Ingreso</option>
+                            <option value="E" {% if filtros.tipo == 'E' %}selected{% endif %}>Egreso</option>
+                            <option value="A" {% if filtros.tipo == 'A' %}selected{% endif %}>Ajuste</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Divisa</label>
+                        <select name="divisa" class="form-select">
+                            <option value="">Todas</option>
+                            {% for divisa in divisas %}
+                                <option value="{{ divisa.id }}" {% if filtros.divisa == divisa.id|stringformat:'s' %}selected{% endif %}>{{ divisa.codigo }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">Beneficiario</label>
+                        <input type="text" name="beneficiario" class="form-control" value="{{ filtros.beneficiario }}">
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button type="submit" class="btn btn-primary w-100">Filtrar</button>
+                    </div>
+                </form>
+                <div class="table-responsive">
+                    <table class="table table-bordered table-striped">
+                        <thead>
+                            <tr>
+                                <th>Fecha</th>
+                                <th>Folio</th>
+                                <th>Tipo</th>
+                                <th>Beneficiario</th>
+                                <th>Divisa</th>
+                                <th>Cantidad</th>
+                                <th>Autorizó</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for movimiento in movimientos %}
+                                <tr>
+                                    <td>{{ movimiento.fecha }}</td>
+                                    <td>{{ movimiento.folio }}</td>
+                                    <td>
+                                        {% if movimiento.tipo == 'I' %}
+                                            <span class="badge bg-success">Ingreso</span>
+                                        {% elif movimiento.tipo == 'E' %}
+                                            <span class="badge bg-danger">Egreso</span>
+                                        {% else %}
+                                            <span class="badge bg-warning">Ajuste</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ movimiento.beneficiario }}</td>
+                                    <td>
+                                        {% for line in movimiento.divisas.all %}
+                                            {{ line.divisa.codigo }}{% if not forloop.last %}, {% endif %}
+                                        {% endfor %}
+                                    </td>
+                                    <td>
+                                        {% for line in movimiento.divisas.all %}
+                                            {{ line.cantidad }}{% if not forloop.last %}, {% endif %}
+                                        {% endfor %}
+                                    </td>
+                                    <td>{{ movimiento.autorizo }}</td>
+                                </tr>
+                            {% empty %}
+                                <tr>
+                                    <td colspan="7" class="text-center">No se encontraron movimientos.</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,63 @@
+{% extends 'base.html' %}
+
+{% block title %}Administrar Divisas{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12 col-lg-5">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h3 class="card-title">Nueva divisa</h3>
+            </div>
+            <div class="card-body">
+                {% if form.errors %}
+                    <div class="alert alert-danger">Por favor corrige los errores del formulario.</div>
+                {% endif %}
+                <form method="post" novalidate>
+                    {% csrf_token %}
+                    <div class="mb-3">{{ form.codigo.label_tag }}{{ form.codigo }}</div>
+                    <div class="mb-3">{{ form.nombre.label_tag }}{{ form.nombre }}</div>
+                    <div class="mb-3">{{ form.simbolo.label_tag }}{{ form.simbolo }}</div>
+                    <div class="form-check mb-3">{{ form.activa }}{{ form.activa.label_tag }}</div>
+                    <button type="submit" class="btn btn-primary">Guardar divisa</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-lg-7">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Divisas registradas</h3>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-bordered mb-0">
+                        <thead>
+                            <tr>
+                                <th>Código</th>
+                                <th>Nombre</th>
+                                <th>Símbolo</th>
+                                <th>Activa</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for divisa in divisas %}
+                                <tr>
+                                    <td>{{ divisa.codigo }}</td>
+                                    <td>{{ divisa.nombre }}</td>
+                                    <td>{{ divisa.simbolo }}</td>
+                                    <td>{% if divisa.activa %}Sí{% else %}No{% endif %}</td>
+                                </tr>
+                            {% empty %}
+                                <tr>
+                                    <td colspan="4" class="text-center">No hay divisas registradas.</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

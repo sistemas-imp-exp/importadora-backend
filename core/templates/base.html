@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Tesorería{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/admin-lte@4/dist/css/adminlte.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-KY4CqZQvVgE8EVtY1xNenfm1G4LSmPKnxC6d0+O8WkFln2aZufmIJ45yJ7El1rvFnBXYu5GGnD5U4QzjU6bm7Q==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+</head>
+<body class="layout-fixed layout-navbar-fixed layout-footer-fixed">
+<div class="wrapper">
+    <nav class="main-header navbar navbar-expand navbar-white navbar-light">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{% url 'index' %}">Tesorería ERP</a>
+            <ul class="navbar-nav ms-auto">
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'index' %}">Dashboard</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="{% url 'administrar_divisas' %}">Divisas</a>
+                </li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="content-wrapper pt-3">
+        <section class="content">
+            <div class="container-fluid">
+                {% if messages %}
+                    {% for message in messages %}
+                        <div class="alert alert-{{ message.tags }} alert-dismissible">
+                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Cerrar"></button>
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+
+                {% block content %}{% endblock %}
+            </div>
+        </section>
+    </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/admin-lte@4/dist/js/adminlte.min.js"></script>
+</body>
+</html>
