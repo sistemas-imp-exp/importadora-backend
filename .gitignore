@@ -24,3 +24,6 @@ db.sqlite3-journal
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+# Scratch de Subagent-Driven Development (Claude Code)
+.superpowers/
