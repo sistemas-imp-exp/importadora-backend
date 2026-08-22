@@ -223,3 +223,35 @@ class SalidaDetalle(models.Model):
 
     def __str__(self):
         return f"{self.salida.folio_de_salida} - {self.producto}"
+
+
+class MovimientoCamara(models.Model):
+    entrada_detalle_origen = models.ForeignKey(
+        EntradaDetalle,
+        on_delete=models.PROTECT,
+        related_name='movimientos_como_lote_origen',
+    )
+    salida = models.OneToOneField(
+        Salida, on_delete=models.PROTECT, related_name='movimiento_camara'
+    )
+    entrada_detalle_destino = models.OneToOneField(
+        EntradaDetalle,
+        on_delete=models.PROTECT,
+        related_name='movimiento_camara_origen',
+    )
+    camara_origen = models.ForeignKey(
+        Camara, on_delete=models.PROTECT, related_name='movimientos_salida'
+    )
+    camara_destino = models.ForeignKey(
+        Camara, on_delete=models.PROTECT, related_name='movimientos_entrada'
+    )
+    fecha = models.DateField()
+    cajas = models.PositiveIntegerField()
+    creado = models.DateTimeField(auto_now_add=True)
+    modificado = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-fecha']
+
+    def __str__(self):
+        return f"{self.camara_origen} -> {self.camara_destino} ({self.fecha})"

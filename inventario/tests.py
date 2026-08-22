@@ -4,7 +4,7 @@ from django.db import IntegrityError
 from django.test import TestCase
 from rest_framework.test import APITestCase
 
-from .models import Camara, Cliente, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral, Salida, SalidaDetalle
+from .models import Camara, Cliente, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral, Salida, SalidaDetalle, MovimientoCamara
 
 
 class CatalogosModelTests(TestCase):
@@ -141,3 +141,57 @@ class SalidaModelTests(TestCase):
         self.assertEqual(salida.detalles.count(), 2)
         facturas = set(salida.detalles.values_list('factura_proveedor', flat=True))
         self.assertEqual(facturas, {"FACT 1070", "FACT 1090"})
+
+
+class MovimientoCamaraModelTests(TestCase):
+    def test_movimiento_enlaza_salida_origen_con_entrada_destino_sin_datos_comerciales(self):
+        proveedor = Proveedor.objects.create(nombre="CACESA")
+        cliente = Cliente.objects.create(nombre="IMPORTADORA-MEXIDELI")
+        camara_origen = Camara.objects.create(nombre="IMPORTADORA", tipo=Camara.TIPO_PROPIA)
+        camara_destino = Camara.objects.create(nombre="MEXIDELI", tipo=Camara.TIPO_PROPIA)
+        producto = Producto.objects.create(talla="31-35", tipo="FREEZADO")
+
+        entrada_origen = Entrada.objects.create(fecha="2026-01-20", proveedor=proveedor)
+        lote_origen = EntradaDetalle.objects.create(
+            entrada=entrada_origen,
+            producto=producto,
+            lote_proveedor="LOTE-ORIGEN",
+            camara=camara_origen,
+            cajas=500,
+            total_kilos=Decimal("10000.00"),
+        )
+
+        salida = Salida.objects.create(
+            folio_de_salida="SI8085", cliente=cliente, fecha="2026-01-26"
+        )
+        SalidaDetalle.objects.create(
+            salida=salida,
+            producto=producto,
+            entrada_detalle=lote_origen,
+            camara=camara_origen,
+            cajas=500,
+            total_kilos=Decimal("10000.00"),
+        )
+
+        entrada_destino = Entrada.objects.create(fecha="2026-01-26", proveedor=proveedor)
+        lote_destino = EntradaDetalle.objects.create(
+            entrada=entrada_destino,
+            producto=producto,
+            lote_proveedor="LOTE-ORIGEN",
+            camara=camara_destino,
+            cajas=500,
+            total_kilos=Decimal("10000.00"),
+        )
+
+        movimiento = MovimientoCamara.objects.create(
+            entrada_detalle_origen=lote_origen,
+            salida=salida,
+            entrada_detalle_destino=lote_destino,
+            camara_origen=camara_origen,
+            camara_destino=camara_destino,
+            fecha="2026-01-26",
+            cajas=500,
+        )
+
+        self.assertEqual(salida.movimiento_camara, movimiento)
+        self.assertEqual(lote_destino.movimiento_camara_origen, movimiento)
