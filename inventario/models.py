@@ -171,6 +171,12 @@ class EntradaDetalle(models.Model):
 
     class Meta:
         ordering = ['-entrada__fecha']
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(lote_proveedor=''),
+                name='entradadetalle_lote_proveedor_no_vacio',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.producto} - {self.lote_proveedor}"
@@ -204,7 +210,11 @@ class SalidaDetalle(models.Model):
         EntradaDetalle, on_delete=models.PROTECT, related_name='salidas_detalle'
     )
     camara = models.ForeignKey(
-        Camara, on_delete=models.PROTECT, related_name='salidas_detalle'
+        Camara,
+        on_delete=models.PROTECT,
+        related_name='salidas_detalle',
+        null=True,
+        blank=True,
     )
     cajas = models.PositiveIntegerField()
     total_kilos = models.DecimalField(max_digits=12, decimal_places=2)
@@ -229,15 +239,15 @@ class MovimientoCamara(models.Model):
     entrada_detalle_origen = models.ForeignKey(
         EntradaDetalle,
         on_delete=models.PROTECT,
-        related_name='movimientos_como_lote_origen',
+        related_name='movimientos_como_origen',
     )
-    salida = models.OneToOneField(
-        Salida, on_delete=models.PROTECT, related_name='movimiento_camara'
+    salida_detalle = models.OneToOneField(
+        SalidaDetalle, on_delete=models.PROTECT, related_name='movimiento_camara'
     )
     entrada_detalle_destino = models.OneToOneField(
         EntradaDetalle,
         on_delete=models.PROTECT,
-        related_name='movimiento_camara_origen',
+        related_name='movimiento_camara_como_destino',
     )
     camara_origen = models.ForeignKey(
         Camara, on_delete=models.PROTECT, related_name='movimientos_salida'

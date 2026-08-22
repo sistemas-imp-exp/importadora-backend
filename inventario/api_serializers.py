@@ -108,6 +108,6 @@ class MovimientoCamaraSerializer(serializers.ModelSerializer):
     class Meta:
         model = MovimientoCamara
         fields = [
-            'id', 'entrada_detalle_origen', 'salida', 'entrada_detalle_destino',
+            'id', 'entrada_detalle_origen', 'salida_detalle', 'entrada_detalle_destino',
             'camara_origen', 'camara_destino', 'fecha', 'cajas',
         ]

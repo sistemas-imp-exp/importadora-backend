@@ -88,6 +88,18 @@ class EntradaModelTests(TestCase):
         self.assertIsNone(detalle.camara)
         self.assertIsNone(detalle.costo_por_kilo)
 
+    def test_lote_proveedor_vacio_es_rechazado_por_la_base_de_datos(self):
+        entrada = Entrada.objects.create(fecha="2026-01-02", proveedor=self.proveedor)
+
+        with self.assertRaises(IntegrityError):
+            EntradaDetalle.objects.create(
+                entrada=entrada,
+                producto=self.producto,
+                lote_proveedor="",
+                cajas=10,
+                total_kilos=Decimal("100.00"),
+            )
+
 
 class SalidaModelTests(TestCase):
     def setUp(self):
@@ -165,7 +177,7 @@ class MovimientoCamaraModelTests(TestCase):
         salida = Salida.objects.create(
             folio_de_salida="SI8085", cliente=cliente, fecha="2026-01-26"
         )
-        SalidaDetalle.objects.create(
+        salida_detalle = SalidaDetalle.objects.create(
             salida=salida,
             producto=producto,
             entrada_detalle=lote_origen,
@@ -186,7 +198,7 @@ class MovimientoCamaraModelTests(TestCase):
 
         movimiento = MovimientoCamara.objects.create(
             entrada_detalle_origen=lote_origen,
-            salida=salida,
+            salida_detalle=salida_detalle,
             entrada_detalle_destino=lote_destino,
             camara_origen=camara_origen,
             camara_destino=camara_destino,
@@ -194,8 +206,61 @@ class MovimientoCamaraModelTests(TestCase):
             cajas=500,
         )
 
-        self.assertEqual(salida.movimiento_camara, movimiento)
-        self.assertEqual(lote_destino.movimiento_camara_origen, movimiento)
+        self.assertEqual(salida_detalle.movimiento_camara, movimiento)
+        self.assertEqual(lote_destino.movimiento_camara_como_destino, movimiento)
+
+    def test_una_salida_puede_mover_dos_lotes_distintos_a_la_vez(self):
+        proveedor = Proveedor.objects.create(nombre="CACESA")
+        cliente = Cliente.objects.create(nombre="IMPORTADORA-MEXIDELI")
+        camara_origen = Camara.objects.create(nombre="IMPORTADORA2", tipo=Camara.TIPO_PROPIA)
+        camara_destino = Camara.objects.create(nombre="MEXIDELI2", tipo=Camara.TIPO_PROPIA)
+        producto = Producto.objects.create(talla="61-70", tipo="FREEZADO")
+
+        entrada = Entrada.objects.create(fecha="2026-01-20", proveedor=proveedor)
+        lote_1 = EntradaDetalle.objects.create(
+            entrada=entrada, producto=producto, lote_proveedor="LOTE-1",
+            camara=camara_origen, cajas=100, total_kilos=Decimal("1000.00"),
+        )
+        lote_2 = EntradaDetalle.objects.create(
+            entrada=entrada, producto=producto, lote_proveedor="LOTE-2",
+            camara=camara_origen, cajas=50, total_kilos=Decimal("500.00"),
+        )
+
+        salida = Salida.objects.create(folio_de_salida="SI9999", cliente=cliente, fecha="2026-01-27")
+        salida_detalle_1 = SalidaDetalle.objects.create(
+            salida=salida, producto=producto, entrada_detalle=lote_1,
+            camara=camara_origen, cajas=100, total_kilos=Decimal("1000.00"),
+        )
+        salida_detalle_2 = SalidaDetalle.objects.create(
+            salida=salida, producto=producto, entrada_detalle=lote_2,
+            camara=camara_origen, cajas=50, total_kilos=Decimal("500.00"),
+        )
+
+        entrada_destino = Entrada.objects.create(fecha="2026-01-27", proveedor=proveedor)
+        lote_1_destino = EntradaDetalle.objects.create(
+            entrada=entrada_destino, producto=producto, lote_proveedor="LOTE-1",
+            camara=camara_destino, cajas=100, total_kilos=Decimal("1000.00"),
+        )
+        lote_2_destino = EntradaDetalle.objects.create(
+            entrada=entrada_destino, producto=producto, lote_proveedor="LOTE-2",
+            camara=camara_destino, cajas=50, total_kilos=Decimal("500.00"),
+        )
+
+        movimiento_1 = MovimientoCamara.objects.create(
+            entrada_detalle_origen=lote_1, salida_detalle=salida_detalle_1,
+            entrada_detalle_destino=lote_1_destino, camara_origen=camara_origen,
+            camara_destino=camara_destino, fecha="2026-01-27", cajas=100,
+        )
+        movimiento_2 = MovimientoCamara.objects.create(
+            entrada_detalle_origen=lote_2, salida_detalle=salida_detalle_2,
+            entrada_detalle_destino=lote_2_destino, camara_origen=camara_origen,
+            camara_destino=camara_destino, fecha="2026-01-27", cajas=50,
+        )
+
+        self.assertEqual(salida.detalles.count(), 2)
+        self.assertNotEqual(movimiento_1, movimiento_2)
+        self.assertEqual(salida_detalle_1.movimiento_camara, movimiento_1)
+        self.assertEqual(salida_detalle_2.movimiento_camara, movimiento_2)
 
 
 class CamaraApiTests(APITestCase):

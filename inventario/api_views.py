@@ -54,7 +54,7 @@ class ProductoViewSet(viewsets.ModelViewSet):
 
 
 class EntradaViewSet(viewsets.ModelViewSet):
-    queryset = Entrada.objects.all()
+    queryset = Entrada.objects.select_related('proveedor').prefetch_related('detalles__producto')
     serializer_class = EntradaSerializer
 
 
@@ -69,7 +69,7 @@ class EntradaDetalleViewSet(viewsets.ModelViewSet):
 
 
 class SalidaViewSet(viewsets.ModelViewSet):
-    queryset = Salida.objects.all()
+    queryset = Salida.objects.select_related('cliente').prefetch_related('detalles__producto')
     serializer_class = SalidaSerializer
 
 
