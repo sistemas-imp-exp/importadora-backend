@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'core',
     'treasury',
+    'inventario',
     "accounts",
     "security",
     'rest_framework',
@@ -94,22 +95,22 @@ WSGI_APPLICATION = 'importadora.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    # 'default': {
-    #     'ENGINE': 'django.db.backends.sqlite3',
-    #     'NAME': BASE_DIR / 'db.sqlite3',
-    # }
-    "default": {
-        "ENGINE": "mssql",
-        "NAME": env("NAME"),
-        "USER": env("USER"),
-        "PASSWORD": env("PASSWORD"),
-        "HOST": env("HOST", default="localhost"),
-        "PORT": env("PORT", default="1433"),
-        "OPTIONS": {
-            "driver": env("DRIVER"),
-            "extra_params": "Encrypt=no;TrustServerCertificate=yes",
-        },
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
+    # "default": {
+    #     "ENGINE": "mssql",
+    #     "NAME": env("NAME"),
+    #     "USER": env("USER"),
+    #     "PASSWORD": env("PASSWORD"),
+    #     "HOST": env("HOST", default="localhost"),
+    #     "PORT": env("PORT", default="1433"),
+    #     "OPTIONS": {
+    #         "driver": env("DRIVER"),
+    #         "extra_params": "Encrypt=no;TrustServerCertificate=yes",
+    #     },
+    # }
 }
 
 
