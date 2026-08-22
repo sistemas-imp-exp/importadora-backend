@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
 from rest_framework.test import APITestCase
@@ -195,3 +196,36 @@ class MovimientoCamaraModelTests(TestCase):
 
         self.assertEqual(salida.movimiento_camara, movimiento)
         self.assertEqual(lote_destino.movimiento_camara_origen, movimiento)
+
+
+class CamaraApiTests(APITestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(username="tester", password="x")
+        self.client.force_authenticate(user=user)
+
+    def test_crear_y_listar_camaras(self):
+        response = self.client.post(
+            "/api/inventario/camaras/",
+            {"nombre": "IMPORTADORA", "tipo": "propia"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+
+        response = self.client.get("/api/inventario/camaras/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+
+
+class EntradaApiTests(APITestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(username="tester2", password="x")
+        self.client.force_authenticate(user=user)
+        self.proveedor = Proveedor.objects.create(nombre="CACESA")
+
+    def test_crear_entrada(self):
+        response = self.client.post(
+            "/api/inventario/entradas/",
+            {"fecha": "2026-01-05", "proveedor_id": self.proveedor.id, "factura": "FACT 1070"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
