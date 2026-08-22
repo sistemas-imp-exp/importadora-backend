@@ -94,3 +94,83 @@ class Producto(models.Model):
 
     def __str__(self):
         return f"{self.talla} {self.tipo}".strip()
+
+
+class Entrada(models.Model):
+    fecha = models.DateField()
+    proveedor = models.ForeignKey(
+        Proveedor, on_delete=models.PROTECT, related_name='entradas'
+    )
+    factura = models.CharField(max_length=50, blank=True)
+    pedimento = models.CharField(max_length=50, blank=True)
+    creado = models.DateTimeField(auto_now_add=True)
+    modificado = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-fecha']
+
+    def __str__(self):
+        return f"Entrada {self.id} - {self.proveedor.nombre} ({self.fecha})"
+
+
+class LoteGeneral(models.Model):
+    codigo = models.CharField(max_length=30, unique=True)
+    entrada = models.ForeignKey(
+        Entrada, on_delete=models.PROTECT, related_name='lotes_generales'
+    )
+    camara = models.ForeignKey(
+        Camara, on_delete=models.PROTECT, related_name='lotes_generales'
+    )
+    fecha_recibo = models.DateField()
+    creado = models.DateTimeField(auto_now_add=True)
+    modificado = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-fecha_recibo']
+
+    def __str__(self):
+        return self.codigo
+
+
+class EntradaDetalle(models.Model):
+    entrada = models.ForeignKey(
+        Entrada, on_delete=models.PROTECT, related_name='detalles'
+    )
+    producto = models.ForeignKey(
+        Producto, on_delete=models.PROTECT, related_name='entradas_detalle'
+    )
+    lote_general = models.ForeignKey(
+        LoteGeneral,
+        on_delete=models.PROTECT,
+        related_name='entradas_detalle',
+        null=True,
+        blank=True,
+    )
+    lote_proveedor = models.CharField(max_length=50)
+    camara = models.ForeignKey(
+        Camara,
+        on_delete=models.PROTECT,
+        related_name='entradas_detalle',
+        null=True,
+        blank=True,
+    )
+    cajas = models.PositiveIntegerField()
+    peso_por_caja = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True
+    )
+    total_kilos = models.DecimalField(max_digits=12, decimal_places=2)
+    costo_por_kilo = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    precio_venta_planeado = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    observaciones = models.TextField(blank=True)
+    creado = models.DateTimeField(auto_now_add=True)
+    modificado = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-entrada__fecha']
+
+    def __str__(self):
+        return f"{self.producto} - {self.lote_proveedor}"
