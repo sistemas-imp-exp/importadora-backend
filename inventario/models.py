@@ -174,3 +174,52 @@ class EntradaDetalle(models.Model):
 
     def __str__(self):
         return f"{self.producto} - {self.lote_proveedor}"
+
+
+class Salida(models.Model):
+    folio_de_salida = models.CharField(max_length=30, unique=True)
+    cliente = models.ForeignKey(
+        Cliente, on_delete=models.PROTECT, related_name='salidas'
+    )
+    fecha = models.DateField()
+    notas = models.CharField(max_length=100, blank=True)
+    creado = models.DateTimeField(auto_now_add=True)
+    modificado = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-fecha']
+
+    def __str__(self):
+        return self.folio_de_salida
+
+
+class SalidaDetalle(models.Model):
+    salida = models.ForeignKey(
+        Salida, on_delete=models.PROTECT, related_name='detalles'
+    )
+    producto = models.ForeignKey(
+        Producto, on_delete=models.PROTECT, related_name='salidas_detalle'
+    )
+    entrada_detalle = models.ForeignKey(
+        EntradaDetalle, on_delete=models.PROTECT, related_name='salidas_detalle'
+    )
+    camara = models.ForeignKey(
+        Camara, on_delete=models.PROTECT, related_name='salidas_detalle'
+    )
+    cajas = models.PositiveIntegerField()
+    total_kilos = models.DecimalField(max_digits=12, decimal_places=2)
+    factura_proveedor = models.CharField(max_length=50, blank=True)
+    precio_x_kilo = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    total_venta = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    creado = models.DateTimeField(auto_now_add=True)
+    modificado = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-salida__fecha']
+
+    def __str__(self):
+        return f"{self.salida.folio_de_salida} - {self.producto}"

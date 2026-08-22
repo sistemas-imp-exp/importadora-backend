@@ -4,7 +4,7 @@ from django.db import IntegrityError
 from django.test import TestCase
 from rest_framework.test import APITestCase
 
-from .models import Camara, Cliente, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral
+from .models import Camara, Cliente, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral, Salida, SalidaDetalle
 
 
 class CatalogosModelTests(TestCase):
@@ -86,3 +86,58 @@ class EntradaModelTests(TestCase):
         self.assertIsNone(detalle.lote_general)
         self.assertIsNone(detalle.camara)
         self.assertIsNone(detalle.costo_por_kilo)
+
+
+class SalidaModelTests(TestCase):
+    def setUp(self):
+        self.proveedor = Proveedor.objects.create(nombre="CACESA")
+        self.cliente = Cliente.objects.create(nombre="HERAY ACERO MORENO")
+        self.camara = Camara.objects.create(nombre="IMPORTADORA", tipo=Camara.TIPO_PROPIA)
+        self.producto = Producto.objects.create(talla="41-50", tipo="FREEZADO")
+
+        self.entrada = Entrada.objects.create(fecha="2026-01-05", proveedor=self.proveedor)
+        self.lote_a = EntradaDetalle.objects.create(
+            entrada=self.entrada,
+            producto=self.producto,
+            lote_proveedor="LOTE-A",
+            camara=self.camara,
+            cajas=60,
+            total_kilos=Decimal("1080.00"),
+        )
+        self.lote_b = EntradaDetalle.objects.create(
+            entrada=self.entrada,
+            producto=self.producto,
+            lote_proveedor="LOTE-B",
+            camara=self.camara,
+            cajas=40,
+            total_kilos=Decimal("720.00"),
+        )
+
+    def test_venta_que_se_completa_con_dos_lotes_se_parte_en_dos_lineas(self):
+        salida = Salida.objects.create(
+            folio_de_salida="SI9000", cliente=self.cliente, fecha="2026-02-01"
+        )
+        SalidaDetalle.objects.create(
+            salida=salida,
+            producto=self.producto,
+            entrada_detalle=self.lote_a,
+            camara=self.camara,
+            cajas=60,
+            total_kilos=Decimal("1080.00"),
+            factura_proveedor="FACT 1070",
+            precio_x_kilo=Decimal("140.00"),
+        )
+        SalidaDetalle.objects.create(
+            salida=salida,
+            producto=self.producto,
+            entrada_detalle=self.lote_b,
+            camara=self.camara,
+            cajas=40,
+            total_kilos=Decimal("720.00"),
+            factura_proveedor="FACT 1090",
+            precio_x_kilo=Decimal("145.00"),
+        )
+
+        self.assertEqual(salida.detalles.count(), 2)
+        facturas = set(salida.detalles.values_list('factura_proveedor', flat=True))
+        self.assertEqual(facturas, {"FACT 1070", "FACT 1090"})
