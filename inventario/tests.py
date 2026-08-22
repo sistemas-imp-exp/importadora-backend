@@ -1,7 +1,8 @@
+from django.db import IntegrityError
 from django.test import TestCase
 from rest_framework.test import APITestCase
 
-from .models import Camara, Cliente, Empresa, Proveedor
+from .models import Camara, Cliente, Empresa, Proveedor, Producto
 
 
 class CatalogosModelTests(TestCase):
@@ -24,3 +25,19 @@ class CatalogosModelTests(TestCase):
 
         self.assertEqual(str(proveedor), "CACESA")
         self.assertEqual(str(cliente), "HERAY ACERO MORENO")
+
+
+class ProductoModelTests(TestCase):
+    def test_talla_y_tipo_no_se_repiten(self):
+        Producto.objects.create(talla="41-50", tipo="FREEZADO", categoria="Camarón")
+
+        with self.assertRaises(IntegrityError):
+            Producto.objects.create(talla="41-50", tipo="FREEZADO")
+
+    def test_presentacion_es_opcional_y_no_se_deriva_de_la_talla(self):
+        producto = Producto.objects.create(
+            talla="16-20", tipo="MARQUETA", presentacion=Producto.PRESENTACION_COLAS
+        )
+
+        self.assertEqual(producto.presentacion, Producto.PRESENTACION_COLAS)
+        self.assertEqual(str(producto), "16-20 MARQUETA")
