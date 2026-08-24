@@ -286,11 +286,129 @@ class EntradaApiTests(APITestCase):
         user = get_user_model().objects.create_user(username="tester2", password="x")
         self.client.force_authenticate(user=user)
         self.proveedor = Proveedor.objects.create(nombre="CACESA")
+        self.camara = Camara.objects.create(nombre="IMPORTADORA2", tipo=Camara.TIPO_PROPIA)
+        self.producto = Producto.objects.create(talla="70-80", tipo="FREEZADO")
 
     def test_crear_entrada(self):
         response = self.client.post(
             "/api/inventario/entradas/",
-            {"fecha": "2026-01-05", "proveedor_id": self.proveedor.id, "factura": "FACT 1070"},
+            {
+                "fecha": "2026-01-05",
+                "proveedor_id": self.proveedor.id,
+                "factura": "FACT 1070",
+                "detalles": [
+                    {
+                        "producto_id": self.producto.id,
+                        "lote_proveedor": "LOTE-TEST",
+                        "camara": self.camara.id,
+                        "cajas": 10,
+                        "total_kilos": "180.00",
+                    }
+                ],
+            },
             format="json",
         )
         self.assertEqual(response.status_code, 201, response.data)
+
+
+class EntradaCreacionAnidadaApiTests(APITestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(username="tester3", password="x")
+        self.client.force_authenticate(user=user)
+        self.proveedor = Proveedor.objects.create(nombre="CACESA")
+        self.camara = Camara.objects.create(nombre="IMPORTADORA3", tipo=Camara.TIPO_PROPIA)
+        self.producto = Producto.objects.create(talla="80-100", tipo="FREEZADO")
+
+    def test_crear_entrada_con_dos_lineas_en_un_solo_post(self):
+        payload = {
+            "fecha": "2026-02-01",
+            "proveedor_id": self.proveedor.id,
+            "factura": "FACT 2001",
+            "pedimento": "",
+            "detalles": [
+                {
+                    "producto_id": self.producto.id,
+                    "lote_proveedor": "LOTE-A",
+                    "camara": self.camara.id,
+                    "cajas": 10,
+                    "total_kilos": "180.00",
+                },
+                {
+                    "producto_id": self.producto.id,
+                    "lote_proveedor": "LOTE-B",
+                    "camara": self.camara.id,
+                    "cajas": 5,
+                    "total_kilos": "90.00",
+                },
+            ],
+        }
+        response = self.client.post("/api/inventario/entradas/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        entrada = Entrada.objects.get(id=response.data["id"])
+        self.assertEqual(entrada.detalles.count(), 2)
+
+    def test_crear_entrada_sin_lineas_falla(self):
+        payload = {
+            "fecha": "2026-02-01",
+            "proveedor_id": self.proveedor.id,
+            "factura": "",
+            "pedimento": "",
+            "detalles": [],
+        }
+        response = self.client.post("/api/inventario/entradas/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400)
+
+
+class SalidaCreacionAnidadaApiTests(APITestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(username="tester4", password="x")
+        self.client.force_authenticate(user=user)
+        self.proveedor = Proveedor.objects.create(nombre="CACESA")
+        self.cliente = Cliente.objects.create(nombre="HERAY ACERO MORENO")
+        self.camara = Camara.objects.create(nombre="IMPORTADORA4", tipo=Camara.TIPO_PROPIA)
+        self.producto = Producto.objects.create(talla="90-110", tipo="FREEZADO")
+
+        entrada = Entrada.objects.create(fecha="2026-02-01", proveedor=self.proveedor)
+        self.lote_a = EntradaDetalle.objects.create(
+            entrada=entrada, producto=self.producto, lote_proveedor="LOTE-A",
+            camara=self.camara, cajas=60, total_kilos="1080.00",
+        )
+        self.lote_b = EntradaDetalle.objects.create(
+            entrada=entrada, producto=self.producto, lote_proveedor="LOTE-B",
+            camara=self.camara, cajas=40, total_kilos="720.00",
+        )
+
+    def test_crear_salida_con_lineas_de_lotes_distintos_en_un_solo_post(self):
+        payload = {
+            "folio_de_salida": "SI9500",
+            "cliente_id": self.cliente.id,
+            "fecha": "2026-02-05",
+            "notas": "2999/25A",
+            "detalles": [
+                {
+                    "producto_id": self.producto.id,
+                    "entrada_detalle": self.lote_a.id,
+                    "camara": self.camara.id,
+                    "cajas": 60,
+                    "total_kilos": "1080.00",
+                    "factura_proveedor": "FACT 1070",
+                    "precio_x_kilo": "140.00",
+                },
+                {
+                    "producto_id": self.producto.id,
+                    "entrada_detalle": self.lote_b.id,
+                    "camara": self.camara.id,
+                    "cajas": 40,
+                    "total_kilos": "720.00",
+                    "factura_proveedor": "FACT 1090",
+                    "precio_x_kilo": "145.00",
+                },
+            ],
+        }
+        response = self.client.post("/api/inventario/salidas/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        salida = Salida.objects.get(id=response.data["id"])
+        self.assertEqual(salida.detalles.count(), 2)

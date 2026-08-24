@@ -1,3 +1,4 @@
+from django.db import transaction
 from rest_framework import serializers
 
 from .models import (
@@ -66,16 +67,45 @@ class EntradaDetalleSerializer(serializers.ModelSerializer):
         ]
 
 
+class EntradaDetalleNestedSerializer(serializers.ModelSerializer):
+    producto = ProductoSerializer(read_only=True)
+    producto_id = serializers.PrimaryKeyRelatedField(
+        source='producto', queryset=Producto.objects.all(), write_only=True
+    )
+
+    class Meta:
+        model = EntradaDetalle
+        fields = [
+            'id', 'producto', 'producto_id', 'lote_general', 'lote_proveedor',
+            'camara', 'cajas', 'peso_por_caja', 'total_kilos', 'costo_por_kilo',
+            'precio_venta_planeado', 'observaciones',
+        ]
+
+
 class EntradaSerializer(serializers.ModelSerializer):
     proveedor = ProveedorSerializer(read_only=True)
     proveedor_id = serializers.PrimaryKeyRelatedField(
         source='proveedor', queryset=Proveedor.objects.filter(activo=True), write_only=True
     )
-    detalles = EntradaDetalleSerializer(many=True, read_only=True)
+    detalles = EntradaDetalleNestedSerializer(many=True)
 
     class Meta:
         model = Entrada
         fields = ['id', 'fecha', 'proveedor', 'proveedor_id', 'factura', 'pedimento', 'detalles']
+
+    def validate(self, data):
+        detalles = data.get('detalles')
+        if not detalles:
+            raise serializers.ValidationError({'detalles': 'Debe incluir al menos una línea.'})
+        return data
+
+    def create(self, validated_data):
+        detalles_data = validated_data.pop('detalles')
+        with transaction.atomic():
+            entrada = Entrada.objects.create(**validated_data)
+            for item in detalles_data:
+                EntradaDetalle.objects.create(entrada=entrada, **item)
+        return entrada
 
 
 class SalidaDetalleSerializer(serializers.ModelSerializer):
@@ -92,16 +122,44 @@ class SalidaDetalleSerializer(serializers.ModelSerializer):
         ]
 
 
+class SalidaDetalleNestedSerializer(serializers.ModelSerializer):
+    producto = ProductoSerializer(read_only=True)
+    producto_id = serializers.PrimaryKeyRelatedField(
+        source='producto', queryset=Producto.objects.all(), write_only=True
+    )
+
+    class Meta:
+        model = SalidaDetalle
+        fields = [
+            'id', 'producto', 'producto_id', 'entrada_detalle', 'camara', 'cajas',
+            'total_kilos', 'factura_proveedor', 'precio_x_kilo', 'total_venta',
+        ]
+
+
 class SalidaSerializer(serializers.ModelSerializer):
     cliente = ClienteSerializer(read_only=True)
     cliente_id = serializers.PrimaryKeyRelatedField(
         source='cliente', queryset=Cliente.objects.filter(activo=True), write_only=True
     )
-    detalles = SalidaDetalleSerializer(many=True, read_only=True)
+    detalles = SalidaDetalleNestedSerializer(many=True)
 
     class Meta:
         model = Salida
         fields = ['id', 'folio_de_salida', 'cliente', 'cliente_id', 'fecha', 'notas', 'detalles']
+
+    def validate(self, data):
+        detalles = data.get('detalles')
+        if not detalles:
+            raise serializers.ValidationError({'detalles': 'Debe incluir al menos una línea.'})
+        return data
+
+    def create(self, validated_data):
+        detalles_data = validated_data.pop('detalles')
+        with transaction.atomic():
+            salida = Salida.objects.create(**validated_data)
+            for item in detalles_data:
+                SalidaDetalle.objects.create(salida=salida, **item)
+        return salida
 
 
 class MovimientoCamaraSerializer(serializers.ModelSerializer):
