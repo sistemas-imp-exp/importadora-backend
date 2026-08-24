@@ -1,4 +1,4 @@
-from rest_framework import viewsets
+from rest_framework import mixins, viewsets
 
 from .models import (
     Camara,
@@ -53,7 +53,12 @@ class ProductoViewSet(viewsets.ModelViewSet):
     serializer_class = ProductoSerializer
 
 
-class EntradaViewSet(viewsets.ModelViewSet):
+class EntradaViewSet(
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = Entrada.objects.select_related('proveedor').prefetch_related('detalles__producto')
     serializer_class = EntradaSerializer
 
@@ -68,7 +73,12 @@ class EntradaDetalleViewSet(viewsets.ModelViewSet):
     serializer_class = EntradaDetalleSerializer
 
 
-class SalidaViewSet(viewsets.ModelViewSet):
+class SalidaViewSet(
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = Salida.objects.select_related('cliente').prefetch_related('detalles__producto')
     serializer_class = SalidaSerializer
 
