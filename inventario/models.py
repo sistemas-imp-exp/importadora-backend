@@ -1,8 +1,16 @@
+from django.conf import settings
 from django.db import models
 
 
 class Empresa(models.Model):
     nombre = models.CharField(max_length=150, unique=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='empresas_creadas',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
@@ -32,6 +40,13 @@ class Camara(models.Model):
         blank=True,
     )
     activo = models.BooleanField(default=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='camaras_creadas',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
@@ -45,6 +60,13 @@ class Camara(models.Model):
 class Proveedor(models.Model):
     nombre = models.CharField(max_length=150, unique=True)
     activo = models.BooleanField(default=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='proveedores_creados',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
@@ -58,6 +80,13 @@ class Proveedor(models.Model):
 class Cliente(models.Model):
     nombre = models.CharField(max_length=150, unique=True)
     activo = models.BooleanField(default=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='clientes_creados',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
@@ -83,6 +112,13 @@ class Producto(models.Model):
         max_length=10, choices=PRESENTACION_CHOICES, blank=True
     )
     activo = models.BooleanField(default=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='productos_creados',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
@@ -99,10 +135,21 @@ class Producto(models.Model):
 class Entrada(models.Model):
     fecha = models.DateField()
     proveedor = models.ForeignKey(
-        Proveedor, on_delete=models.PROTECT, related_name='entradas'
+        Proveedor,
+        on_delete=models.PROTECT,
+        related_name='entradas',
+        null=True,
+        blank=True,
     )
     factura = models.CharField(max_length=50, blank=True)
     pedimento = models.CharField(max_length=50, blank=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='entradas_creadas',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
@@ -110,7 +157,8 @@ class Entrada(models.Model):
         ordering = ['-fecha']
 
     def __str__(self):
-        return f"Entrada {self.id} - {self.proveedor.nombre} ({self.fecha})"
+        proveedor = self.proveedor.nombre if self.proveedor else "Movimiento interno"
+        return f"Entrada {self.id} - {proveedor} ({self.fecha})"
 
 
 class LoteGeneral(models.Model):
@@ -134,7 +182,7 @@ class LoteGeneral(models.Model):
 
 class EntradaDetalle(models.Model):
     entrada = models.ForeignKey(
-        Entrada, on_delete=models.PROTECT, related_name='detalles'
+        Entrada, on_delete=models.CASCADE, related_name='detalles'
     )
     producto = models.ForeignKey(
         Producto, on_delete=models.PROTECT, related_name='entradas_detalle'
@@ -181,14 +229,33 @@ class EntradaDetalle(models.Model):
     def __str__(self):
         return f"{self.producto} - {self.lote_proveedor}"
 
+    @property
+    def cajas_disponibles(self):
+        # Un movimiento entre cámaras también genera un SalidaDetalle (su "tramo de
+        # salida"), así que ya queda contado aquí — sumar movimientos_como_origen
+        # aparte lo contaría dos veces.
+        vendidas = self.salidas_detalle.aggregate(total=models.Sum('cajas'))['total'] or 0
+        return self.cajas - vendidas
+
 
 class Salida(models.Model):
     folio_de_salida = models.CharField(max_length=30, unique=True)
     cliente = models.ForeignKey(
-        Cliente, on_delete=models.PROTECT, related_name='salidas'
+        Cliente,
+        on_delete=models.PROTECT,
+        related_name='salidas',
+        null=True,
+        blank=True,
     )
     fecha = models.DateField()
     notas = models.CharField(max_length=100, blank=True)
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='salidas_creadas',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
@@ -201,7 +268,7 @@ class Salida(models.Model):
 
 class SalidaDetalle(models.Model):
     salida = models.ForeignKey(
-        Salida, on_delete=models.PROTECT, related_name='detalles'
+        Salida, on_delete=models.CASCADE, related_name='detalles'
     )
     producto = models.ForeignKey(
         Producto, on_delete=models.PROTECT, related_name='salidas_detalle'
@@ -257,6 +324,13 @@ class MovimientoCamara(models.Model):
     )
     fecha = models.DateField()
     cajas = models.PositiveIntegerField()
+    creado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='movimientos_creados',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 

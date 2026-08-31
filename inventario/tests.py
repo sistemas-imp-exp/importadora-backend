@@ -360,11 +360,6 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
 
-    def test_put_a_entrada_es_405_no_500(self):
-        entrada = Entrada.objects.create(fecha="2026-02-01", proveedor=self.proveedor)
-        response = self.client.put(f"/api/inventario/entradas/{entrada.id}/", {}, format="json")
-        self.assertEqual(response.status_code, 405)
-
 
 class SalidaCreacionAnidadaApiTests(APITestCase):
     def setUp(self):

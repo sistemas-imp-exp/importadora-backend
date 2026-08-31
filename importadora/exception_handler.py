@@ -1,5 +1,6 @@
 from django.core.exceptions import NON_FIELD_ERRORS
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import ProtectedError
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
@@ -12,9 +13,18 @@ def custom_exception_handler(exc, context):
 
     - Los ValidationError de Django (los que lanzan los modelos en full_clean())
       no pasan por el manejador de DRF por defecto; aquí se normalizan a 400.
+    - ProtectedError (on_delete=PROTECT) se normaliza a 400 con un mensaje legible,
+      en vez del 500 genérico — ocurre, por ejemplo, al intentar borrar un lote de
+      entrada que ya tiene una venta o un movimiento entre cámaras registrado.
     - Cualquier otro error no controlado (bugs, IntegrityError, etc.) se
       convierte en un 500 genérico en vez de dejar escapar detalles técnicos.
     """
+    if isinstance(exc, ProtectedError):
+        return Response(
+            {"detail": "No se puede eliminar: hay otros registros (ventas o movimientos) que dependen de esto."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     if isinstance(exc, DjangoValidationError):
         if hasattr(exc, "message_dict"):
             detail = {
