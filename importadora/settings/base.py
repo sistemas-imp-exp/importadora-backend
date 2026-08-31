@@ -4,11 +4,11 @@ import environ
 import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parents[2]
 
 env = environ.Env(
-    # set casting, default value
-    DEBUG=(bool, False)
+    DEBUG=(bool, False),
+    ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1"]),
 )
 
 # Take environment variables from .env file
@@ -19,14 +19,12 @@ environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# SECRET_KEY = ''
-SECRET_KEY = env('SECRET_KEY')
+SECRET_KEY = env('SECRET_KEY', default='dev-secret-key-for-local-only')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-# DEBUG = True
-DEBUG = env('DEBUG')
+DEBUG = env('DEBUG', default=True)
 
-ALLOWED_HOSTS = ['192.168.1.77', '127.0.0.1']
+ALLOWED_HOSTS = env('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
@@ -94,22 +92,22 @@ WSGI_APPLICATION = 'importadora.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    # 'default': {
-    #     'ENGINE': 'django.db.backends.sqlite3',
-    #     'NAME': BASE_DIR / 'db.sqlite3',
-    # }
-    "default": {
-        "ENGINE": "mssql",
-        "NAME": env("NAME"),
-        "USER": env("USER"),
-        "PASSWORD": env("PASSWORD"),
-        "HOST": env("HOST", default="localhost"),
-        "PORT": env("PORT", default="1433"),
-        "OPTIONS": {
-            "driver": env("DRIVER"),
-            "extra_params": "Encrypt=no;TrustServerCertificate=yes",
-        },
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
+    # "default": {
+    #     "ENGINE": "mssql",
+    #     "NAME": env("NAME"),
+    #     "USER": env("USER"),
+    #     "PASSWORD": env("PASSWORD"),
+    #     "HOST": env("HOST", default="localhost"),
+    #     "PORT": env("PORT", default="1433"),
+    #     "OPTIONS": {
+    #         "driver": env("DRIVER"),
+    #         "extra_params": "Encrypt=no;TrustServerCertificate=yes",
+    #     },
+    # }
 }
 
 
