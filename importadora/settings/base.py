@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 
 env = environ.Env(
     DEBUG=(bool, False),
-    ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1"]),
+    ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1", "192.168.1.21"]),
 )
 
 # Take environment variables from .env file
@@ -24,13 +24,17 @@ SECRET_KEY = env('SECRET_KEY', default='dev-secret-key-for-local-only')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG', default=True)
 
-ALLOWED_HOSTS = env('ALLOWED_HOSTS', default=['localhost', '127.0.0.1'])
+ALLOWED_HOSTS = ['*']
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
-    "http://192.168.1.77:5173",
-    "http://192.168.1.77:5137",
+    "http://192.168.1.21:5173",
 ]
+
+CSRF_TRUSTED_ORIGINS = [
+    'http://192.168.1.21:5173',
+]
+
 
 # Sin esto, el navegador no deja leer Content-Disposition en respuestas
 # cross-origin (aunque el servidor lo mande) y las descargas de reportes
