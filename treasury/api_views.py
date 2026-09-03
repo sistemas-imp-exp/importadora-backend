@@ -52,7 +52,13 @@ class DivisaViewSet(viewsets.ModelViewSet):
 
 
 class CorteCajaViewSet(viewsets.ModelViewSet):
-    queryset = CorteCaja.objects.order_by('-fecha').all()
+    # El serializer anida los dos responsables y los saldos con su divisa.
+    queryset = (
+        CorteCaja.objects
+        .select_related('responsable_apertura', 'responsable_cierre')
+        .prefetch_related('saldos__divisa')
+        .order_by('-fecha')
+    )
     serializer_class = CorteCajaSerializer
 
     @action(detail=True, methods=['post'])

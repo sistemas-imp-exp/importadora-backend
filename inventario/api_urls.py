@@ -14,6 +14,10 @@ from .api_views import (
     SalidaDetalleViewSet,
     SalidaViewSet,
 )
+from .alertas_views import listar_alertas_caducidad
+from .auditoria_views import editar_entrada_auditada, listar_ediciones_entrada
+from .existencias_views import listar_existencias
+from .reportes_views import exportar_existencias_excel, exportar_existencias_pdf
 
 router = DefaultRouter()
 router.register(r'empresas', EmpresaViewSet)
@@ -29,5 +33,11 @@ router.register(r'salidas-detalle', SalidaDetalleViewSet)
 router.register(r'movimientos-camara', MovimientoCamaraViewSet)
 
 urlpatterns = [
+    path('reportes/existencias/excel/', exportar_existencias_excel),
+    path('reportes/existencias/pdf/', exportar_existencias_pdf),
+    path('existencias/', listar_existencias),
+    path('alertas/caducidad/', listar_alertas_caducidad),
+    path('auditoria/entradas/', listar_ediciones_entrada),
+    path('auditoria/entradas/<int:entrada_id>/', editar_entrada_auditada),
     path('', include(router.urls)),
 ]

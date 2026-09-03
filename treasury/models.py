@@ -232,6 +232,7 @@ class MovimientoTesoreria(models.Model):
 
     class Meta:
         ordering = ['-fecha', '-creado']
+        indexes = [models.Index(fields=['-fecha', '-creado'], name='movtesoreria_fecha_idx')]
 
     def __str__(self):
         return f"{self.get_tipo_display()} {self.folio} ({self.fecha})"
