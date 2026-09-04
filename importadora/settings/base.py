@@ -8,7 +8,8 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 
 env = environ.Env(
     DEBUG=(bool, False),
-    ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1", "192.168.1.21"]),
+    ALLOWED_HOSTS=(list, ["localhost", "127.0.0.1"]),
+    CORS_ALLOWED_ORIGINS=(list, ["http://localhost:5173", "http://127.0.0.1:5173"]),
 )
 
 # Take environment variables from .env file
@@ -24,16 +25,14 @@ SECRET_KEY = env('SECRET_KEY', default='dev-secret-key-for-local-only')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG', default=True)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://192.168.1.21:5173",
-]
-
-CSRF_TRUSTED_ORIGINS = [
-    'http://192.168.1.21:5173',
-]
+# Los origenes desde los que se sirve el frontend. Se declaran una sola vez:
+# CSRF_TRUSTED_ORIGINS tenia su propia lista y ya habia divergido (solo incluia
+# la IP de la LAN, no localhost), que es justo el tipo de desfase que provoca
+# un 403 imposible de rastrear en una sola maquina de la red.
+CORS_ALLOWED_ORIGINS = env('CORS_ALLOWED_ORIGINS')
+CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
 
 
 # Sin esto, el navegador no deja leer Content-Disposition en respuestas

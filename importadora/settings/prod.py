@@ -2,12 +2,9 @@ from .base import *
 
 DEBUG = False
 
-ALLOWED_HOSTS = [
-    "localhost",
-    "127.0.0.1",
-    "192.168.1.128",
-    "tu-dominio.com",
-]
+# ALLOWED_HOSTS y CORS_ALLOWED_ORIGINS vienen del .env (ver base.py). Tenerlos
+# aqui escritos a mano significaba que el host de produccion vivia en el
+# repositorio, y seguia teniendo el "tu-dominio.com" de la plantilla.
 
 DATABASES = {
     "default": {

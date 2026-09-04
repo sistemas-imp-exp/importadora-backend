@@ -1,7 +1,10 @@
 from .base import *
 
 DEBUG = True
-ALLOWED_HOSTS = ["localhost", "127.0.0.1", "0.0.0.0", "192.168.1.21"]
+
+# ALLOWED_HOSTS y CORS_ALLOWED_ORIGINS vienen del .env (ver base.py). Antes se
+# repetian aqui con la IP de la LAN escrita a mano, asi que cambiar de red
+# obligaba a tocar codigo en tres archivos distintos.
 
 DATABASES = {
     "default": {
