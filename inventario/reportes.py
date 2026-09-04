@@ -14,6 +14,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from .caducidad import SIN_CADUCIDAD, rango_de_nivel
 from .models import Camara, EntradaDetalle
 
 COLOR_ENCABEZADO = "0E6B6F"
@@ -72,18 +73,61 @@ def obtener_lotes_filtrados(params, ids_extra=None):
         condicion |= Q(id__in=ids_extra)
     lotes = lotes.filter(condicion)
 
+    # Los filtros son los mismos chips de la pantalla de Existencias, con los
+    # mismos nombres: así el PDF que se descarga corresponde exactamente a lo
+    # que el usuario tiene en pantalla y no a "todo el inventario".
     camara_id = params.get('camara')
     if camara_id:
         lotes = lotes.filter(camara_id=camara_id)
 
+    proveedor = (params.get('proveedor') or '').strip()
+    if proveedor:
+        # La pantalla muestra "—" en los lotes sin proveedor de origen.
+        if proveedor == '—':
+            lotes = lotes.filter(proveedor_origen__isnull=True)
+        else:
+            lotes = lotes.filter(proveedor_origen__nombre=proveedor)
+
+    talla = (params.get('talla') or '').strip()
+    if talla:
+        lotes = lotes.filter(producto__talla=talla)
+
+    tipo = (params.get('tipo') or '').strip()
+    if tipo:
+        lotes = lotes.filter(producto__tipo=tipo)
+
+    nivel = (params.get('nivel') or '').strip()
+    if nivel == SIN_CADUCIDAD:
+        lotes = lotes.filter(fecha_caducidad__isnull=True)
+    elif nivel:
+        rango = rango_de_nivel(nivel, timezone.localdate())
+        if rango:
+            desde, hasta = rango
+            lotes = lotes.filter(fecha_caducidad__isnull=False)
+            if desde is not None:
+                lotes = lotes.filter(fecha_caducidad__gte=desde)
+            if hasta is not None:
+                lotes = lotes.filter(fecha_caducidad__lte=hasta)
+
     busqueda = (params.get('busqueda') or '').strip()
     if busqueda:
-        lotes = lotes.filter(Q(producto__talla__icontains=busqueda) | Q(producto__tipo__icontains=busqueda))
+        # Mismos campos que el buscador de la pantalla. Factura y recibo se
+        # buscan sobre la entrada propia del lote: para los lotes llegados por
+        # traslado la pantalla muestra el documento del lote de origen, que se
+        # resuelve recorriendo la cadena en Python y no es filtrable en SQL.
+        lotes = lotes.filter(
+            Q(producto__talla__icontains=busqueda)
+            | Q(producto__tipo__icontains=busqueda)
+            | Q(lote_proveedor__icontains=busqueda)
+            | Q(entrada__factura__icontains=busqueda)
+            | Q(lote_general__codigo__icontains=busqueda)
+        )
 
     return lotes.order_by('producto__tipo', 'producto__talla', 'camara__nombre')
 
 
 def describir_filtros(params):
+    """Los filtros aplicados, en texto, para imprimirlos en el encabezado del PDF."""
     partes = []
 
     camara_id = params.get('camara')
@@ -91,9 +135,22 @@ def describir_filtros(params):
         camara = Camara.objects.filter(pk=camara_id).first()
         partes.append(f"Cámara: {camara.nombre}" if camara else f"Cámara #{camara_id}")
 
+    for clave, etiqueta in (('proveedor', 'Proveedor'), ('talla', 'Talla'), ('tipo', 'Tipo')):
+        valor = (params.get(clave) or '').strip()
+        if valor:
+            partes.append(f"{etiqueta}: {valor}")
+
+    nivel = (params.get('nivel') or '').strip()
+    if nivel:
+        etiquetas = {
+            'vencido': 'Vencido', 'critico': 'Crítico', 'urgente': 'Urgente',
+            'por_vencer': 'Por vencer', SIN_CADUCIDAD: 'Sin caducidad',
+        }
+        partes.append(f"Caducidad: {etiquetas.get(nivel, nivel)}")
+
     busqueda = (params.get('busqueda') or '').strip()
     if busqueda:
-        partes.append(f'Talla/tipo contiene: "{busqueda}"')
+        partes.append(f'Contiene: "{busqueda}"')
 
     return partes
 

@@ -2,30 +2,15 @@ from datetime import timedelta
 
 from django.utils import timezone
 
+# Se re-exportan para no romper a quien ya los importaba desde aquí.
+from .caducidad import (  # noqa: F401
+    DIAS_CRITICO,
+    DIAS_POR_VENCER,
+    DIAS_URGENTE,
+    NIVELES,
+    clasificar_nivel,
+)
 from .reportes import obtener_lotes_filtrados
-
-DIAS_POR_VENCER = 30
-DIAS_URGENTE = 15
-DIAS_CRITICO = 7
-
-NIVELES = ["vencido", "critico", "urgente", "por_vencer"]
-
-
-def clasificar_nivel(dias_restantes):
-    """
-    dias_restantes: (fecha_caducidad - hoy).days, puede ser negativo si ya
-    venció. Devuelve None cuando está fuera de la ventana de alerta (no hay
-    nada que avisar todavía).
-    """
-    if dias_restantes < 0:
-        return "vencido"
-    if dias_restantes <= DIAS_CRITICO:
-        return "critico"
-    if dias_restantes <= DIAS_URGENTE:
-        return "urgente"
-    if dias_restantes <= DIAS_POR_VENCER:
-        return "por_vencer"
-    return None
 
 
 def obtener_lotes_por_vencer(params):
