@@ -575,6 +575,7 @@ class SalidaCreacionAnidadaApiTests(APITestCase):
             "folio_de_salida": "SI9600",
             "cliente_id": self.cliente.id,
             "fecha": "2026-02-06",
+            "notas": "NS-9600",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
@@ -591,6 +592,28 @@ class SalidaCreacionAnidadaApiTests(APITestCase):
         self.assertEqual(response.data["detalles"][0]["camara"], self.camara.id)
         salida_detalle = SalidaDetalle.objects.get(id=response.data["detalles"][0]["id"])
         self.assertEqual(salida_detalle.camara_id, self.camara.id)
+
+    def test_salida_sin_nota_de_salida_es_rechazada(self):
+        # La nota de salida es el folio del documento físico con el que sale la
+        # mercancía: sin ella la salida del sistema no se amarra con nada.
+        payload = {
+            "folio_de_salida": "SI9601",
+            "cliente_id": self.cliente.id,
+            "fecha": "2026-02-06",
+            "detalles": [
+                {
+                    "producto_id": self.producto.id,
+                    "entrada_detalle": self.lote_a.id,
+                    "cajas": 10,
+                    "total_kilos": "180.00",
+                },
+            ],
+        }
+        response = self.client.post("/api/inventario/salidas/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("notas", response.data)
+        self.assertFalse(Salida.objects.filter(folio_de_salida="SI9601").exists())
 
 
 class MovimientoCamaraApiTests(APITestCase):

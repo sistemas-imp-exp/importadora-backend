@@ -350,7 +350,12 @@ class Salida(models.Model):
         blank=True,
     )
     fecha = models.DateField()
-    notas = models.CharField(max_length=100, blank=True)
+    # Obligatoria: es el folio de la nota de salida en papel, el documento con
+    # el que sale la mercancía. Sin él, una salida del sistema no se puede
+    # amarrar con nada físico. Los movimientos entre cámaras la llenan solos
+    # ("Movimiento entre cámaras"), y las salidas ya cargadas del Excel se
+    # quedan con la suya vacía: blank=False solo valida capturas nuevas.
+    notas = models.CharField(max_length=100)
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
