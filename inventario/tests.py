@@ -1,3 +1,4 @@
+import importlib
 from datetime import timedelta
 from decimal import Decimal
 
@@ -69,6 +70,7 @@ class EntradaModelTests(TestCase):
             lote_proveedor="LOTE-001",
             camara=self.camara,
             cajas=1,
+            peso_por_caja=Decimal("18.00"),
             total_kilos=Decimal("18.00"),
             costo_por_kilo=Decimal("100.00"),
             precio_venta_planeado=Decimal("150.00"),
@@ -84,6 +86,7 @@ class EntradaModelTests(TestCase):
             producto=self.producto,
             lote_proveedor="LOTE-DIRECTO",
             cajas=25,
+            peso_por_caja=Decimal("20.00"),
             total_kilos=Decimal("500.00"),
         )
 
@@ -100,8 +103,38 @@ class EntradaModelTests(TestCase):
                 producto=self.producto,
                 lote_proveedor="",
                 cajas=10,
+                peso_por_caja=Decimal("10.00"),
                 total_kilos=Decimal("100.00"),
             )
+
+
+class CorregirPesoPorCajaMigracionTests(TestCase):
+    """La 0018 rellena los peso_por_caja que la 0017 dejó en 0."""
+
+    def test_deriva_peso_de_total_kilos_entre_cajas(self):
+        from django.apps import apps
+        migracion = importlib.import_module("inventario.migrations.0018_corregir_peso_por_caja")
+
+        proveedor = Proveedor.objects.create(nombre="CACESA")
+        producto = Producto.objects.create(talla="30-40", tipo="FREEZADO")
+        entrada = Entrada.objects.create(fecha="2026-01-05", proveedor=proveedor)
+        con_cajas = EntradaDetalle.objects.create(
+            entrada=entrada, producto=producto, lote_proveedor="LOTE-1",
+            cajas=3, peso_por_caja=Decimal("1.00"), total_kilos=Decimal("100.00"),
+        )
+        sin_cajas = EntradaDetalle.objects.create(
+            entrada=entrada, producto=producto, lote_proveedor="LOTE-2",
+            cajas=0, peso_por_caja=Decimal("1.00"), total_kilos=Decimal("7.50"),
+        )
+        # update() salta el validador, igual que el default=0 de la 0017.
+        EntradaDetalle.objects.update(peso_por_caja=Decimal("0"))
+
+        migracion.corregir_peso_por_caja(apps, None)
+
+        con_cajas.refresh_from_db()
+        sin_cajas.refresh_from_db()
+        self.assertEqual(con_cajas.peso_por_caja, Decimal("33.33"))
+        self.assertEqual(sin_cajas.peso_por_caja, Decimal("7.50"))
 
 
 class SalidaModelTests(TestCase):
@@ -118,6 +151,7 @@ class SalidaModelTests(TestCase):
             lote_proveedor="LOTE-A",
             camara=self.camara,
             cajas=60,
+            peso_por_caja=Decimal("18.00"),
             total_kilos=Decimal("1080.00"),
         )
         self.lote_b = EntradaDetalle.objects.create(
@@ -126,6 +160,7 @@ class SalidaModelTests(TestCase):
             lote_proveedor="LOTE-B",
             camara=self.camara,
             cajas=40,
+            peso_por_caja=Decimal("18.00"),
             total_kilos=Decimal("720.00"),
         )
 
@@ -196,6 +231,7 @@ class MovimientoCamaraModelTests(TestCase):
             lote_proveedor="LOTE-ORIGEN",
             camara=camara_origen,
             cajas=500,
+            peso_por_caja=Decimal("20.00"),
             total_kilos=Decimal("10000.00"),
         )
 
@@ -218,6 +254,7 @@ class MovimientoCamaraModelTests(TestCase):
             lote_proveedor="LOTE-ORIGEN",
             camara=camara_destino,
             cajas=500,
+            peso_por_caja=Decimal("20.00"),
             total_kilos=Decimal("10000.00"),
         )
 
@@ -244,11 +281,13 @@ class MovimientoCamaraModelTests(TestCase):
         entrada = Entrada.objects.create(fecha="2026-01-20", proveedor=proveedor)
         lote_1 = EntradaDetalle.objects.create(
             entrada=entrada, producto=producto, lote_proveedor="LOTE-1",
-            camara=camara_origen, cajas=100, total_kilos=Decimal("1000.00"),
+            camara=camara_origen, cajas=100, peso_por_caja=Decimal("10.00"),
+            total_kilos=Decimal("1000.00"),
         )
         lote_2 = EntradaDetalle.objects.create(
             entrada=entrada, producto=producto, lote_proveedor="LOTE-2",
-            camara=camara_origen, cajas=50, total_kilos=Decimal("500.00"),
+            camara=camara_origen, cajas=50, peso_por_caja=Decimal("10.00"),
+            total_kilos=Decimal("500.00"),
         )
 
         salida = Salida.objects.create(folio_de_salida="SI9999", cliente=cliente, fecha="2026-01-27")
@@ -264,11 +303,13 @@ class MovimientoCamaraModelTests(TestCase):
         entrada_destino = Entrada.objects.create(fecha="2026-01-27", proveedor=proveedor)
         lote_1_destino = EntradaDetalle.objects.create(
             entrada=entrada_destino, producto=producto, lote_proveedor="LOTE-1",
-            camara=camara_destino, cajas=100, total_kilos=Decimal("1000.00"),
+            camara=camara_destino, cajas=100, peso_por_caja=Decimal("10.00"),
+            total_kilos=Decimal("1000.00"),
         )
         lote_2_destino = EntradaDetalle.objects.create(
             entrada=entrada_destino, producto=producto, lote_proveedor="LOTE-2",
-            camara=camara_destino, cajas=50, total_kilos=Decimal("500.00"),
+            camara=camara_destino, cajas=50, peso_por_caja=Decimal("10.00"),
+            total_kilos=Decimal("500.00"),
         )
 
         movimiento_1 = MovimientoCamara.objects.create(
@@ -327,6 +368,7 @@ class EntradaApiTests(APITestCase):
                         "lote_proveedor": "LOTE-TEST",
                         "camara": self.camara.id,
                         "cajas": 10,
+                        "peso_por_caja": "18.00",
                         "total_kilos": "180.00",
                     }
                 ],
@@ -356,6 +398,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                     "lote_proveedor": "LOTE-A",
                     "camara": self.camara.id,
                     "cajas": 10,
+                    "peso_por_caja": "18.00",
                     "total_kilos": "180.00",
                 },
                 {
@@ -363,6 +406,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                     "lote_proveedor": "LOTE-B",
                     "camara": self.camara.id,
                     "cajas": 5,
+                    "peso_por_caja": "18.00",
                     "total_kilos": "90.00",
                 },
             ],
@@ -398,6 +442,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                     "lote_proveedor": "LOTE-INTL",
                     "camara": self.camara.id,
                     "cajas": 10,
+                    "peso_por_caja": "18.00",
                     "total_kilos": "180.00",
                 },
             ],
@@ -420,6 +465,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                     "lote_proveedor": "LOTE-NAL",
                     "camara": self.camara.id,
                     "cajas": 10,
+                    "peso_por_caja": "18.00",
                     "total_kilos": "180.00",
                 },
             ],
@@ -439,6 +485,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                     "lote_proveedor": "LOTE-SF",
                     "camara": self.camara.id,
                     "cajas": 10,
+                    "peso_por_caja": "18.00",
                     "total_kilos": "180.00",
                 },
             ],
@@ -459,6 +506,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                     "lote_proveedor": "lote-minusculas",
                     "camara": self.camara.id,
                     "cajas": 10,
+                    "peso_por_caja": "18.00",
                     "total_kilos": "180.00",
                     "observaciones": "revisar con calma",
                 },
@@ -482,6 +530,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                     "lote_proveedor": "LOTE-D",
                     "camara": self.camara.id,
                     "cajas": 10,
+                    "peso_por_caja": "18.00",
                     "total_kilos": "180.00",
                 },
             ],
@@ -503,6 +552,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                     "lote_proveedor": "LOTE-C",
                     "camara": self.camara.id,
                     "cajas": 10,
+                    "peso_por_caja": "18.00",
                     "total_kilos": "180.00",
                 },
             ],
@@ -512,6 +562,29 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.data)
         lote_general = LoteGeneral.objects.get(codigo="IMP-9999")
         self.assertEqual(lote_general.creado_por_id, self.user.id)
+
+    def test_peso_por_caja_en_cero_se_rechaza(self):
+        # cajas_disponibles divide entre peso_por_caja: un 0 tumbaría existencias.
+        payload = {
+            "fecha": "2026-02-01",
+            "proveedor_id": self.proveedor.id,
+            "factura": "FACT 3006",
+            "detalles": [
+                {
+                    "producto_id": self.producto.id,
+                    "lote_proveedor": "LOTE-CERO",
+                    "camara": self.camara.id,
+                    "cajas": 10,
+                    "peso_por_caja": "0.00",
+                    "total_kilos": "180.00",
+                },
+            ],
+        }
+        response = self.client.post("/api/inventario/entradas/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("detalles", response.data)
+        self.assertFalse(Entrada.objects.filter(factura="FACT 3006").exists())
 
 
 class SalidaCreacionAnidadaApiTests(APITestCase):
@@ -526,11 +599,11 @@ class SalidaCreacionAnidadaApiTests(APITestCase):
         entrada = Entrada.objects.create(fecha="2026-02-01", proveedor=self.proveedor)
         self.lote_a = EntradaDetalle.objects.create(
             entrada=entrada, producto=self.producto, lote_proveedor="LOTE-A",
-            camara=self.camara, cajas=60, total_kilos="1080.00",
+            camara=self.camara, cajas=60, peso_por_caja="18.00", total_kilos="1080.00",
         )
         self.lote_b = EntradaDetalle.objects.create(
             entrada=entrada, producto=self.producto, lote_proveedor="LOTE-B",
-            camara=self.camara, cajas=40, total_kilos="720.00",
+            camara=self.camara, cajas=40, peso_por_caja="18.00", total_kilos="720.00",
         )
 
     def test_crear_salida_con_lineas_de_lotes_distintos_en_un_solo_post(self):
@@ -615,6 +688,54 @@ class SalidaCreacionAnidadaApiTests(APITestCase):
         self.assertIn("notas", response.data)
         self.assertFalse(Salida.objects.filter(folio_de_salida="SI9601").exists())
 
+    def test_salida_con_cajas_en_cero_registra_kilos_sueltos(self):
+        # lote_a entró con 60 cajas / 1080.00 kilos (18kg/caja). Vender kilos
+        # sueltos de una caja ya abierta no debe mover ninguna caja completa.
+        payload = {
+            "folio_de_salida": "SI9700",
+            "cliente_id": self.cliente.id,
+            "fecha": "2026-02-07",
+            "notas": "NS-9700",
+            "detalles": [
+                {
+                    "producto_id": self.producto.id,
+                    "entrada_detalle": self.lote_a.id,
+                    "cajas": 0,
+                    "total_kilos": "5.00",
+                },
+            ],
+        }
+        response = self.client.post("/api/inventario/salidas/", payload, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.lote_a.refresh_from_db()
+        self.assertEqual(self.lote_a.kilos_disponibles, Decimal("1075.00"))
+        # 1075.00 / 18.00 sigue dando piso 59: no se perdió ninguna caja completa.
+        self.assertEqual(self.lote_a.cajas_disponibles, 59)
+
+    def test_salida_que_excede_los_kilos_disponibles_del_lote_se_rechaza(self):
+        # lote_b entró con 40 cajas / 720.00 kilos: pedir más de eso debe
+        # rechazarse aunque las cajas pedidas sí alcancen (aquí ni se piden).
+        payload = {
+            "folio_de_salida": "SI9701",
+            "cliente_id": self.cliente.id,
+            "fecha": "2026-02-07",
+            "notas": "NS-9701",
+            "detalles": [
+                {
+                    "producto_id": self.producto.id,
+                    "entrada_detalle": self.lote_b.id,
+                    "cajas": 0,
+                    "total_kilos": "800.00",
+                },
+            ],
+        }
+        response = self.client.post("/api/inventario/salidas/", payload, format="json")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("detalles", response.data)
+        self.assertFalse(Salida.objects.filter(folio_de_salida="SI9701").exists())
+
 
 class MovimientoCamaraApiTests(APITestCase):
     def setUp(self):
@@ -628,7 +749,8 @@ class MovimientoCamaraApiTests(APITestCase):
         entrada = Entrada.objects.create(fecha="2026-02-01", proveedor=self.proveedor, factura="FACT 4001")
         self.lote_origen = EntradaDetalle.objects.create(
             entrada=entrada, producto=self.producto, lote_proveedor="LOTE-MOV",
-            camara=self.camara_origen, cajas=100, total_kilos=Decimal("2000.00"),
+            camara=self.camara_origen, cajas=100, peso_por_caja=Decimal("20.00"),
+            total_kilos=Decimal("2000.00"),
             proveedor_origen=self.proveedor, fecha_caducidad="2026-06-01",
         )
 
@@ -697,9 +819,13 @@ class AlertasCaducidadTests(TestCase):
     def _crear_lote(self, cajas, dias_para_caducar=None, cajas_vendidas=0):
         entrada = Entrada.objects.create(fecha=self.hoy, proveedor=self.proveedor)
         fecha_caducidad = self.hoy + timedelta(days=dias_para_caducar) if dias_para_caducar is not None else None
+        # peso_por_caja=10.00: consistente con total_kilos=100.00 solo porque todas
+        # las llamadas de este helper usan cajas=10 — si eso cambia, hay que ajustar
+        # total_kilos junto con cajas para no desalinear cajas_disponibles.
         lote = EntradaDetalle.objects.create(
             entrada=entrada, producto=self.producto, lote_proveedor="LOTE-X",
-            camara=self.camara, cajas=cajas, total_kilos=Decimal("100.00"),
+            camara=self.camara, cajas=cajas, peso_por_caja=Decimal("10.00"),
+            total_kilos=Decimal("100.00"),
             proveedor_origen=self.proveedor, fecha_caducidad=fecha_caducidad,
         )
         if cajas_vendidas:
@@ -707,7 +833,7 @@ class AlertasCaducidadTests(TestCase):
             salida = Salida.objects.create(folio_de_salida=f"SI-{lote.id}", cliente=cliente, fecha=self.hoy)
             SalidaDetalle.objects.create(
                 salida=salida, producto=self.producto, entrada_detalle=lote,
-                camara=self.camara, cajas=cajas_vendidas, total_kilos=Decimal("10.00"),
+                camara=self.camara, cajas=cajas_vendidas, total_kilos=Decimal(cajas_vendidas * 10),
             )
         return lote
 
@@ -760,7 +886,8 @@ class AlertasCaducidadApiTests(APITestCase):
         entrada = Entrada.objects.create(fecha=hoy, proveedor=self.proveedor)
         EntradaDetalle.objects.create(
             entrada=entrada, producto=self.producto, lote_proveedor="LOTE-Y",
-            camara=self.camara, cajas=10, total_kilos=Decimal("100.00"),
+            camara=self.camara, cajas=10, peso_por_caja=Decimal("10.00"),
+            total_kilos=Decimal("100.00"),
             proveedor_origen=self.proveedor, fecha_caducidad=hoy + timedelta(days=3),
         )
 

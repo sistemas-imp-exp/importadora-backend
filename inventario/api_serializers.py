@@ -1,3 +1,4 @@
+from decimal import Decimal
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
@@ -462,28 +463,51 @@ class SalidaSerializer(serializers.ModelSerializer):
         if not detalles:
             raise serializers.ValidationError({'detalles': 'Debe incluir al menos una línea.'})
 
-        # Al editar, las cajas que esta misma Salida ya tenía reservadas de un lote se
-        # "liberan" antes de comparar, porque se van a reemplazar por lo que viene en el payload.
-        ya_reservado = {}
+        # Al editar, lo que esta misma Salida ya tenía reservado de un lote se
+        # "libera" antes de comparar, porque se va a reemplazar por lo que viene
+        # en el payload — igual para cajas que para kilos.
+        cajas_ya_reservadas = {}
+        kilos_ya_reservados = {}
         if self.instance:
             for linea in self.instance.detalles.all():
-                ya_reservado[linea.entrada_detalle_id] = ya_reservado.get(linea.entrada_detalle_id, 0) + linea.cajas
+                cajas_ya_reservadas[linea.entrada_detalle_id] = (
+                    cajas_ya_reservadas.get(linea.entrada_detalle_id, 0) + linea.cajas
+                )
+                kilos_ya_reservados[linea.entrada_detalle_id] = (
+                    kilos_ya_reservados.get(linea.entrada_detalle_id, Decimal('0')) + linea.total_kilos
+                )
 
-        solicitado = {}
+        cajas_solicitadas = {}
+        kilos_solicitados = {}
         lotes = {}
         for item in detalles:
             lote = item['entrada_detalle']
             lotes[lote.id] = lote
-            solicitado[lote.id] = solicitado.get(lote.id, 0) + item['cajas']
+            cajas_solicitadas[lote.id] = cajas_solicitadas.get(lote.id, 0) + item['cajas']
+            kilos_solicitados[lote.id] = kilos_solicitados.get(lote.id, Decimal('0')) + item['total_kilos']
 
-        for lote_id, cajas_pedidas in solicitado.items():
+        for lote_id, cajas_pedidas in cajas_solicitadas.items():
             lote = lotes[lote_id]
-            disponibles = lote.cajas_disponibles + ya_reservado.get(lote_id, 0)
+            disponibles = lote.cajas_disponibles + cajas_ya_reservadas.get(lote_id, 0)
             if cajas_pedidas > disponibles:
                 raise serializers.ValidationError({
                     'detalles': (
                         f"No hay suficientes cajas disponibles en el lote {lote.lote_proveedor} "
                         f"({lote.producto}): pediste {cajas_pedidas}, disponibles {disponibles}."
+                    )
+                })
+
+        # Antes solo se topaba `cajas`: con eso ya no alcanza en cuanto una línea
+        # puede llevar cajas=0 (kilos sueltos de una caja abierta) — sin este
+        # chequeo esa línea no tendría ningún tope real.
+        for lote_id, kilos_pedidos in kilos_solicitados.items():
+            lote = lotes[lote_id]
+            disponibles = lote.kilos_disponibles + kilos_ya_reservados.get(lote_id, Decimal('0'))
+            if kilos_pedidos > disponibles:
+                raise serializers.ValidationError({
+                    'detalles': (
+                        f"No hay suficientes kilos disponibles en el lote {lote.lote_proveedor} "
+                        f"({lote.producto}): pediste {kilos_pedidos} kg, disponibles {disponibles} kg."
                     )
                 })
         return data

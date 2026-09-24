@@ -20,7 +20,7 @@ def _serializar(lote):
         'lote_proveedor': lote.lote_proveedor,
         'recibo_ingreso': documento['recibo'] or '—',
         'factura': documento['factura'] or '—',
-        'peso_por_caja': str(lote.peso_por_caja) if lote.peso_por_caja is not None else None,
+        'peso_por_caja': str(lote.peso_por_caja),
         'cajas_disponibles': lote.cajas_disp,
         'total_kilos': str(lote.total_kilos),
         'kilos_vendidos': str(lote.kilos_vendidos),

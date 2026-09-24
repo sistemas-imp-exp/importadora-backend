@@ -3,7 +3,7 @@ from io import BytesIO
 from xml.sax.saxutils import escape
 
 from django.db.models import DecimalField, F, IntegerField, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Cast, Coalesce, Floor
 from django.utils import timezone
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -39,6 +39,10 @@ def obtener_lotes_filtrados(params, ids_extra=None):
     modelo (cajas_disponibles/kilos_disponibles) porque Django no puede
     hidratar una annotation sobre un nombre que ya es una property sin
     setter — truena con AttributeError al iterar el queryset.
+
+    cajas_disp es el piso de kilos_disp / peso_por_caja (mismo criterio que
+    EntradaDetalle.cajas_disponibles, ver su docstring) y no un contador
+    independiente, para que nunca se desincronice de kilos_disp.
     """
     lotes = (
         EntradaDetalle.objects
@@ -52,23 +56,27 @@ def obtener_lotes_filtrados(params, ids_extra=None):
             'entrada__proveedor',
         )
         .annotate(
-            cajas_vendidas=Coalesce(
-                Sum('salidas_detalle__cajas'), Value(0), output_field=IntegerField()
-            ),
             kilos_vendidos=Coalesce(
                 Sum('salidas_detalle__total_kilos'), Value(Decimal('0')),
                 output_field=DecimalField(max_digits=12, decimal_places=2),
             ),
         )
         .annotate(
-            cajas_disp=F('cajas') - F('cajas_vendidas'),
             kilos_disp=F('total_kilos') - F('kilos_vendidos'),
+        )
+        .annotate(
+            cajas_disp=Cast(Floor(F('kilos_disp') / F('peso_por_caja')), IntegerField()),
         )
     )
 
     # ids_extra deja pasar lotes ya agotados: los usa la edición de una salida,
     # que debe seguir viendo los lotes que ella misma consumió.
-    condicion = Q(cajas_disp__gt=0)
+    #
+    # El criterio de "tiene existencia" es kilos_disp, no cajas_disp: un lote
+    # puede quedar con menos peso del que pesa una caja completa (p. ej. tras
+    # vender kilos sueltos de una caja ya abierta) y sigue siendo mercancía
+    # real vendible por kilo, aunque ya no alcance para ofrecer una caja entera.
+    condicion = Q(kilos_disp__gt=0)
     if ids_extra:
         condicion |= Q(id__in=ids_extra)
     lotes = lotes.filter(condicion)

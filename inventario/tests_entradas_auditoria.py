@@ -36,7 +36,8 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-BLOQ",
-            camara=self.camara, cajas=100, total_kilos=Decimal("1800.00"),
+            camara=self.camara, cajas=100, peso_por_caja=Decimal("18.00"),
+            total_kilos=Decimal("1800.00"),
             proveedor_origen=self.proveedor,
         )
 
@@ -52,6 +53,7 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
                 "lote_proveedor": "LOTE-BLOQ",
                 "camara": self.camara.id,
                 "cajas": 100,
+                "peso_por_caja": "18.00",
                 "total_kilos": "1800.00",
             }],
         }
@@ -156,7 +158,8 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-BIT",
-            camara=self.camara, cajas=20, total_kilos=Decimal("360.00"),
+            camara=self.camara, cajas=20, peso_por_caja=Decimal("18.00"),
+            total_kilos=Decimal("360.00"),
             proveedor_origen=self.proveedor,
         )
 
@@ -167,6 +170,7 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
             "lote_proveedor": "LOTE-BIT",
             "camara": self.camara.id,
             "cajas": 20,
+            "peso_por_caja": "18.00",
             "total_kilos": "360.00",
         }
         linea.update(cambios)
@@ -208,6 +212,7 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
             "lote_proveedor": "LOTE-NUEVO",
             "camara": self.camara.id,
             "cajas": 7,
+            "peso_por_caja": "18.00",
             "total_kilos": "126.00",
         }
         self.assertEqual(self._put([self._linea(), nueva]).status_code, 200)
@@ -221,6 +226,7 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
             "lote_proveedor": "LOTE-NUEVO",
             "camara": self.camara.id,
             "cajas": 7,
+            "peso_por_caja": "18.00",
             "total_kilos": "126.00",
         }])
 
@@ -283,7 +289,8 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-AUD",
-            camara=self.camara, cajas=50, total_kilos=Decimal("900.00"),
+            camara=self.camara, cajas=50, peso_por_caja=Decimal("18.00"),
+            total_kilos=Decimal("900.00"),
             proveedor_origen=self.proveedor,
         )
         salida = Salida.objects.create(

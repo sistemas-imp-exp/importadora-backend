@@ -2,6 +2,7 @@ from decimal import Decimal
 from functools import cached_property
 
 from django.conf import settings
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models.functions import Coalesce
 
@@ -200,12 +201,12 @@ class EntradaDetalleQuerySet(models.QuerySet):
         Anota lo ya vendido/movido de cada lote y trae de una vez todo lo que
         necesitan `cajas_disponibles`, `kilos_disponibles` y `documento_origen`.
 
-        Sin esto, serializar N lotes dispara varias consultas por lote (dos
-        agregaciones más el recorrido de la cadena de movimientos): listar las
+        Sin esto, serializar N lotes dispara varias consultas por lote (una
+        agregación más el recorrido de la cadena de movimientos): listar las
         entradas costaba más de 9,000 consultas y medio minuto.
 
-        Las dos sumas comparten el mismo join contra salidas_detalle, así que no
-        se inflan entre sí.
+        Solo se anota lo vendido en kilos: cajas_disponibles se deriva de ahí
+        (ver esa property), no necesita su propia agregación aparte.
         """
         return self.select_related(
             # producto/proveedor se serializan con su `creado_por` anidado, así que
@@ -218,7 +219,6 @@ class EntradaDetalleQuerySet(models.QuerySet):
             'movimiento_camara_como_destino__entrada_detalle_origen__entrada',
             'movimiento_camara_como_destino__entrada_detalle_origen__lote_general',
         ).annotate(
-            cajas_vendidas_anotadas=Coalesce(models.Sum('salidas_detalle__cajas'), 0),
             kilos_vendidos_anotados=Coalesce(
                 models.Sum('salidas_detalle__total_kilos'),
                 models.Value(Decimal('0')),
@@ -261,8 +261,13 @@ class EntradaDetalle(models.Model):
         blank=True,
     )
     cajas = models.PositiveIntegerField()
+    # Obligatorio: es lo que permite derivar cajas_disponibles a partir de
+    # kilos_disponibles (ver esa property) sin tener que rastrear cajas y
+    # kilos como dos contadores independientes que se pueden desincronizar
+    # (p. ej. al vender kilos sueltos de una caja ya abierta). Mayor a cero
+    # porque cajas_disponibles divide entre este valor.
     peso_por_caja = models.DecimalField(
-        max_digits=8, decimal_places=2, null=True, blank=True
+        max_digits=8, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))]
     )
     total_kilos = models.DecimalField(max_digits=12, decimal_places=2)
     costo_por_kilo = models.DecimalField(
@@ -321,16 +326,18 @@ class EntradaDetalle(models.Model):
 
     @property
     def cajas_disponibles(self):
-        # Un movimiento entre cámaras también genera un SalidaDetalle (su "tramo de
-        # salida"), así que ya queda contado aquí — sumar movimientos_como_origen
-        # aparte lo contaría dos veces.
-        #
-        # Si el queryset ya trae la suma anotada (ver EntradaDetalle.con_consumo)
-        # se usa esa: sin eso, listar N lotes dispara N consultas de agregación.
-        vendidas = getattr(self, 'cajas_vendidas_anotadas', None)
-        if vendidas is None:
-            vendidas = self.salidas_detalle.aggregate(total=models.Sum('cajas'))['total'] or 0
-        return self.cajas - vendidas
+        """
+        Piso de kilos_disponibles / peso_por_caja, no un contador aparte.
+
+        Antes se restaba `cajas` vendidas de forma independiente a como se
+        restaban los kilos, así que los dos números se podían desincronizar
+        (p. ej. al vender kilos sueltos de una caja ya abierta, que solo
+        movía kilos_disponibles y dejaba cajas_disponibles intacto). Derivar
+        cajas de kilos los mantiene siempre consistentes entre sí, y el piso
+        (en vez de redondear) evita ofrecer una caja completa que ya no tiene
+        peso suficiente.
+        """
+        return int(self.kilos_disponibles // self.peso_por_caja)
 
     @property
     def kilos_disponibles(self):
