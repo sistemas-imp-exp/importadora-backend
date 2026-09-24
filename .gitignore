@@ -28,3 +28,6 @@ db.sqlite3-journal
 
 # Scratch de Subagent-Driven Development (Claude Code)
 .superpowers/
+
+# Windows
+Thumbs.db
