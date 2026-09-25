@@ -11,6 +11,8 @@ import os
 
 from django.core.wsgi import get_wsgi_application
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'importadora.settings.dev')
+# Por defecto produccion: wsgi/asgi solo los usa el servidor (waitress bajo NSSM,
+# que no define DJANGO_SETTINGS_MODULE). En desarrollo se usa manage.py -> dev.
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'importadora.settings.prod')
 
 application = get_wsgi_application()
