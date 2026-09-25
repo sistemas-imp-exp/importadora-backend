@@ -23,6 +23,8 @@ from .models import (
     Rancho,
 )
 from importadora.exception_handler import custom_exception_handler
+from security.permissions import AREA_TESORERIA
+from security.testing import crear_usuario_con_area
 
 User = get_user_model()
 
@@ -98,7 +100,7 @@ class CustomExceptionHandlerTests(TestCase):
 
 class MovimientoTesoreriaApiTests(APITestCase):
     def setUp(self):
-        self.usuario = User.objects.create_user(username='cajero', password='clave12345')
+        self.usuario = crear_usuario_con_area('cajero', AREA_TESORERIA, password='clave12345')
         self.client.force_authenticate(user=self.usuario)
 
         self.mxn = Divisa.objects.create(codigo='MXN', nombre='Peso mexicano', simbolo='$')
@@ -218,7 +220,7 @@ class ReporteMovimientosApiTests(APITestCase):
     def setUp(self):
         import openpyxl  # noqa: F401 -- falla temprano y claro si no está instalado
 
-        self.usuario = User.objects.create_user(username='auditor', password='clave12345')
+        self.usuario = crear_usuario_con_area('auditor', AREA_TESORERIA, password='clave12345')
         self.client.force_authenticate(user=self.usuario)
 
         self.mxn = Divisa.objects.create(codigo='MXN', nombre='Peso mexicano', simbolo='$')
@@ -367,7 +369,7 @@ class ReporteMovimientosApiTests(APITestCase):
 
 class ArqueoCajaApiTests(APITestCase):
     def setUp(self):
-        self.usuario = User.objects.create_user(username='auditor_arqueo', password='clave12345')
+        self.usuario = crear_usuario_con_area('auditor_arqueo', AREA_TESORERIA, password='clave12345')
         self.client.force_authenticate(user=self.usuario)
 
         self.mxn = Divisa.objects.create(codigo='MXN', nombre='Peso mexicano', simbolo='$')
@@ -450,7 +452,7 @@ class ArqueoCajaApiTests(APITestCase):
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
 class MovimientoArchivoApiTests(APITestCase):
     def setUp(self):
-        self.usuario = User.objects.create_user(username='cajero_archivos', password='clave12345')
+        self.usuario = crear_usuario_con_area('cajero_archivos', AREA_TESORERIA, password='clave12345')
         self.client.force_authenticate(user=self.usuario)
 
         self.mxn = Divisa.objects.create(codigo='MXN', nombre='Peso mexicano', simbolo='$')
@@ -527,7 +529,7 @@ class NominaDetalleModelTests(TestCase):
             salario_diario=Decimal('200.00'),
             numero_cuenta='1234567890',
         )
-        self.usuario = User.objects.create_user(username='nominero', password='clave12345')
+        self.usuario = crear_usuario_con_area('nominero', AREA_TESORERIA, password='clave12345')
         self.nomina = NominaSemanal.objects.create(
             fecha_inicio=timezone.localdate(),
             fecha_fin=timezone.localdate() + timedelta(days=6),
@@ -578,7 +580,7 @@ class NominaDetalleModelTests(TestCase):
 
 class NominaSemanalApiTests(APITestCase):
     def setUp(self):
-        self.usuario = User.objects.create_user(username='nominero_api', password='clave12345')
+        self.usuario = crear_usuario_con_area('nominero_api', AREA_TESORERIA, password='clave12345')
         self.client.force_authenticate(user=self.usuario)
 
         self.rancho_1 = Rancho.objects.create(nombre='Rancho Norte')

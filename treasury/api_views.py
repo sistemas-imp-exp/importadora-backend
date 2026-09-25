@@ -5,6 +5,7 @@ from rest_framework import mixins, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
+from security.permissions import AreaTesoreria
 from .models import (
     ArqueoCaja,
     Banco,
@@ -47,11 +48,13 @@ LIMITE_SUGERENCIAS = 10
 
 
 class DivisaViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = Divisa.objects.all()
     serializer_class = DivisaSerializer
 
 
 class CorteCajaViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     # El serializer anida los dos responsables y los saldos con su divisa.
     queryset = (
         CorteCaja.objects
@@ -86,6 +89,7 @@ class CorteCajaViewSet(viewsets.ModelViewSet):
 
 
 class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = MovimientoTesoreria.objects.prefetch_related('divisas__divisa').order_by('-fecha', '-creado')
     serializer_class = MovimientoTesoreriaSerializer
 
@@ -137,11 +141,13 @@ class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
 
 
 class SaldoCajaViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = SaldoCaja.objects.select_related('divisa', 'corte').all()
     serializer_class = SaldoCajaSerializer
 
 
 class DenominacionViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     # Sin filtrar por activa: el admin de denominaciones necesita ver también
     # las inactivas. Las pantallas que solo quieren las activas (p. ej. Arqueo)
     # deben pedirlo explícitamente con ?activa=true.
@@ -165,6 +171,7 @@ class DenominacionViewSet(viewsets.ModelViewSet):
 
 
 class ArqueoCajaViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = ArqueoCaja.objects.select_related('corte', 'usuario').prefetch_related('divisas__divisa', 'divisas__conteos__denominacion')
     serializer_class = ArqueoCajaSerializer
 
@@ -183,21 +190,25 @@ class ArqueoCajaViewSet(viewsets.ModelViewSet):
 
 
 class RanchoViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = Rancho.objects.all()
     serializer_class = RanchoSerializer
 
 
 class PuestoViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = Puesto.objects.all()
     serializer_class = PuestoSerializer
 
 
 class BancoViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = Banco.objects.all()
     serializer_class = BancoSerializer
 
 
 class EmpleadoViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = Empleado.objects.select_related('rancho', 'puesto', 'banco').all()
     serializer_class = EmpleadoSerializer
 
@@ -210,6 +221,7 @@ class EmpleadoViewSet(viewsets.ModelViewSet):
 
 
 class NominaSemanalViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaTesoreria]
     queryset = NominaSemanal.objects.select_related('creado_por', 'cerrada_por').prefetch_related(
         'detalles__empleado__rancho', 'detalles__empleado__puesto'
     )
@@ -231,6 +243,7 @@ class MovimientoArchivoViewSet(
     mixins.ListModelMixin,
     viewsets.GenericViewSet,
 ):
+    permission_classes = [AreaTesoreria]
     # Sin update: un adjunto se reemplaza subiendo uno nuevo y borrando el viejo.
     queryset = MovimientoArchivo.objects.select_related('movimiento', 'subido_por')
     serializer_class = MovimientoArchivoSerializer

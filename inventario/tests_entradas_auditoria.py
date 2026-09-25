@@ -7,6 +7,9 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
+from security.permissions import AREA_INVENTARIO
+from security.testing import crear_usuario_con_area
+
 from .models import (
     Camara,
     Cliente,
@@ -24,7 +27,7 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
     """Una entrada que ya tuvo salidas no se edita ni se borra por la vía normal."""
 
     def setUp(self):
-        self.user = get_user_model().objects.create_user(username="bloqueo", password="x")
+        self.user = crear_usuario_con_area("bloqueo", AREA_INVENTARIO)
         self.client.force_authenticate(user=self.user)
         self.proveedor = Proveedor.objects.create(nombre="CACESA")
         self.cliente = Cliente.objects.create(nombre="HERAY")
@@ -146,7 +149,7 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
     """Toda edición normal deja rastro de qué se movió, quién y cuándo."""
 
     def setUp(self):
-        self.user = get_user_model().objects.create_user(username="capturista", password="x")
+        self.user = crear_usuario_con_area("capturista", AREA_INVENTARIO)
         self.client.force_authenticate(user=self.user)
         self.proveedor = Proveedor.objects.create(nombre="ACUAMAYA")
         self.camara = Camara.objects.create(nombre="CAM-BIT", tipo=Camara.TIPO_PROPIA)
@@ -278,7 +281,7 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
         self.superusuario = get_user_model().objects.create_superuser(
             username="jefe", password="x", email="jefe@example.com"
         )
-        self.normal = get_user_model().objects.create_user(username="normalito", password="x")
+        self.normal = crear_usuario_con_area("normalito", AREA_INVENTARIO)
         self.proveedor = Proveedor.objects.create(nombre="MANTABAY")
         self.cliente = Cliente.objects.create(nombre="CLIENTE-AUD")
         self.camara = Camara.objects.create(nombre="CAM-AUD", tipo=Camara.TIPO_PROPIA)

@@ -5,9 +5,11 @@ from django.shortcuts import redirect, render
 from django.utils import timezone
 
 from core.forms import AperturaCajaForm, CierreCajaForm, DivisaForm, MovimientoTesoreriaForm
+from security.permissions import AREA_TESORERIA, area_requerida
 from treasury.models import CorteCaja, Divisa, MovimientoDivisa, MovimientoTesoreria, SaldoCaja
 
 
+@area_requerida(AREA_TESORERIA)
 def index(request):
     ultimo_corte = CorteCaja.objects.order_by('-fecha').first()
     saldos = ultimo_corte.saldos.select_related('divisa') if ultimo_corte else []
@@ -161,6 +163,7 @@ def index(request):
     })
 
 
+@area_requerida(AREA_TESORERIA)
 def apertura_caja(request):
     ultimo_corte = CorteCaja.objects.order_by('-fecha').first()
     if request.method == 'POST':
@@ -186,6 +189,7 @@ def apertura_caja(request):
     })
 
 
+@area_requerida(AREA_TESORERIA)
 def registro_movimiento(request):
     corte_abierto = CorteCaja.objects.filter(cerrado=False).order_by('-fecha').first()
     if not corte_abierto:
@@ -229,6 +233,7 @@ def registro_movimiento(request):
     })
 
 
+@area_requerida(AREA_TESORERIA)
 def consulta_movimientos(request):
     movimientos = MovimientoTesoreria.objects.prefetch_related('divisas__divisa').order_by('-fecha', '-creado')
     q_fecha = request.GET.get('fecha')
@@ -264,6 +269,7 @@ def consulta_movimientos(request):
     })
 
 
+@area_requerida(AREA_TESORERIA)
 def cierre_caja(request):
     corte_abierto = CorteCaja.objects.filter(cerrado=False).order_by('-fecha').first()
     if not corte_abierto:
@@ -299,6 +305,7 @@ def cierre_caja(request):
     })
 
 
+@area_requerida(AREA_TESORERIA)
 def administrar_divisas(request):
     divisas = Divisa.objects.order_by('codigo')
     if request.method == 'POST':

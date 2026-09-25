@@ -4,8 +4,10 @@ from django.core.exceptions import ValidationError
 from django.http import HttpResponse
 from django.utils.dateparse import parse_date
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+
+from security.permissions import AreaTesoreria
 
 from .reportes import (
     PREVIEW_LIMIT,
@@ -70,6 +72,7 @@ def _serializar_resumen(filas):
 
 
 @api_view(["GET"])
+@permission_classes([AreaTesoreria])
 def resumen_movimientos(request):
     try:
         lineas = obtener_lineas_filtradas(request.query_params)
@@ -89,6 +92,7 @@ def resumen_movimientos(request):
 
 
 @api_view(["GET"])
+@permission_classes([AreaTesoreria])
 def exportar_movimientos_excel(request):
     try:
         lineas = obtener_lineas_filtradas(request.query_params)
@@ -111,6 +115,7 @@ def exportar_movimientos_excel(request):
 
 
 @api_view(["GET"])
+@permission_classes([AreaTesoreria])
 def exportar_movimientos_pdf(request):
     try:
         lineas = obtener_lineas_filtradas(request.query_params)

@@ -7,16 +7,16 @@ from .views import (
     FotoPerfilView,
     LoginView,
     MeView,
-    RegistroView,
     UsuarioViewSet,
 )
 
 router = DefaultRouter()
 router.register(r'usuarios', UsuarioViewSet)
 
+# Sin registro público: las cuentas las crea un superusuario desde el módulo de
+# Usuarios (UsuarioViewSet), que además les asigna sus áreas.
 urlpatterns = [
     path("login/", LoginView.as_view(), name="login"),
-    path("registro/", RegistroView.as_view(), name="registro"),
     path("refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("me/", MeView.as_view()),
     path("me/password/", CambiarPasswordView.as_view()),

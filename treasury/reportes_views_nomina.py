@@ -4,8 +4,10 @@ from django.core.exceptions import ValidationError
 from django.http import HttpResponse
 from django.utils.dateparse import parse_date
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+
+from security.permissions import AreaTesoreria
 
 from .reportes_nomina import (
     PREVIEW_LIMIT,
@@ -92,6 +94,7 @@ def _serializar_resumen_banco(filas):
 
 
 @api_view(["GET"])
+@permission_classes([AreaTesoreria])
 def resumen_nomina(request):
     try:
         detalles = obtener_detalles_filtrados(request.query_params)
@@ -113,6 +116,7 @@ def resumen_nomina(request):
 
 
 @api_view(["GET"])
+@permission_classes([AreaTesoreria])
 def exportar_nomina_excel(request):
     try:
         detalles = obtener_detalles_filtrados(request.query_params)
@@ -136,6 +140,7 @@ def exportar_nomina_excel(request):
 
 
 @api_view(["GET"])
+@permission_classes([AreaTesoreria])
 def exportar_nomina_pdf(request):
     try:
         detalles = obtener_detalles_filtrados(request.query_params)

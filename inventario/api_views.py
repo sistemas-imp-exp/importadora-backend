@@ -4,6 +4,8 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from security.permissions import AreaInventario
+
 from .paginacion import PaginacionInventario
 
 from .auditoria import entrada_tiene_salidas, registrar_eliminacion
@@ -38,6 +40,7 @@ from .api_serializers import (
 
 
 class EmpresaViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = Empresa.objects.all()
     serializer_class = EmpresaSerializer
 
@@ -46,6 +49,7 @@ class EmpresaViewSet(viewsets.ModelViewSet):
 
 
 class CamaraViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     # creado_por se serializa anidado en todos los catalogos: sin el select_related
     # cada fila del listado dispara una consulta extra por su usuario.
     queryset = Camara.objects.select_related('creado_por', 'empresa')
@@ -56,6 +60,7 @@ class CamaraViewSet(viewsets.ModelViewSet):
 
 
 class ProveedorViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = Proveedor.objects.select_related('creado_por')
     serializer_class = ProveedorSerializer
 
@@ -64,6 +69,7 @@ class ProveedorViewSet(viewsets.ModelViewSet):
 
 
 class ClienteViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = Cliente.objects.select_related('creado_por')
     serializer_class = ClienteSerializer
 
@@ -72,6 +78,7 @@ class ClienteViewSet(viewsets.ModelViewSet):
 
 
 class ProductoViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = Producto.objects.select_related('creado_por')
     serializer_class = ProductoSerializer
 
@@ -80,6 +87,7 @@ class ProductoViewSet(viewsets.ModelViewSet):
 
 
 class EntradaViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = (
         Entrada.objects
         .select_related('proveedor__creado_por', 'creado_por')
@@ -177,16 +185,19 @@ class EntradaViewSet(viewsets.ModelViewSet):
 
 
 class LoteGeneralViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = LoteGeneral.objects.select_related('creado_por', 'camara', 'entrada')
     serializer_class = LoteGeneralSerializer
 
 
 class EntradaDetalleViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = EntradaDetalle.objects.con_consumo()
     serializer_class = EntradaDetalleSerializer
 
 
 class SalidaViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = (
         Salida.objects
         .select_related('cliente', 'creado_por')
@@ -229,6 +240,7 @@ class SalidaViewSet(viewsets.ModelViewSet):
 
 
 class SalidaDetalleViewSet(viewsets.ModelViewSet):
+    permission_classes = [AreaInventario]
     queryset = SalidaDetalle.objects.select_related('producto__creado_por', 'camara', 'salida')
     serializer_class = SalidaDetalleSerializer
 
@@ -238,6 +250,7 @@ class MovimientoCamaraViewSet(
     mixins.ListModelMixin,
     viewsets.GenericViewSet,
 ):
+    permission_classes = [AreaInventario]
     queryset = MovimientoCamara.objects.select_related(
         'entrada_detalle_origen__producto', 'entrada_detalle_destino',
         'camara_origen', 'camara_destino', 'salida_detalle', 'creado_por',

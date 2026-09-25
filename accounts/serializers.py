@@ -53,43 +53,12 @@ class UsuarioMeSerializer(serializers.ModelSerializer):
         ]
 
     def get_areas(self, obj):
-        return [ua.area.codigo for ua in obj.areas.select_related('area')]
+        # Solo activas: mismo criterio que security.permissions.tiene_area, para
+        # que el menú del frontend no ofrezca módulos que el backend va a negar.
+        return [ua.area.codigo for ua in obj.areas.select_related('area').filter(area__activo=True)]
 
     def get_foto(self, obj):
         return _url_foto(obj, self.context.get('request'))
-
-
-class RegistroSerializer(serializers.Serializer):
-    username = serializers.CharField(max_length=150)
-    password = serializers.CharField(write_only=True)
-    password2 = serializers.CharField(write_only=True)
-    first_name = serializers.CharField(required=False, allow_blank=True, default="")
-    last_name = serializers.CharField(required=False, allow_blank=True, default="")
-
-    def validate_username(self, value):
-        if User.objects.filter(username=value).exists():
-            raise serializers.ValidationError("Ya existe un usuario con ese nombre de usuario.")
-        return value
-
-    def validate(self, attrs):
-        if attrs['password'] != attrs['password2']:
-            raise serializers.ValidationError({'password2': 'Las contraseñas no coinciden.'})
-
-        try:
-            validar_password_django(attrs['password'])
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError({'password': list(exc.messages)})
-
-        return attrs
-
-    def create(self, validated_data):
-        validated_data.pop('password2')
-        password = validated_data.pop('password')
-
-        user = User(**validated_data)
-        user.set_password(password)
-        user.save()
-        return user
 
 
 class ActualizarPerfilSerializer(serializers.ModelSerializer):

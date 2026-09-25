@@ -13,7 +13,6 @@ from .serializers import (
     CambiarPasswordSerializer,
     FotoPerfilSerializer,
     LoginSerializer,
-    RegistroSerializer,
     UsuarioCatalogoSerializer,
     UsuarioMeSerializer,
 )
@@ -39,27 +38,6 @@ class LoginView(APIView):
                 "user": UsuarioMeSerializer(user, context={"request": request}).data,
             },
             status=status.HTTP_200_OK,
-        )
-
-
-class RegistroView(APIView):
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = RegistroSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        user = serializer.save()
-
-        refresh = RefreshToken.for_user(user)
-
-        return Response(
-            {
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-                "user": UsuarioMeSerializer(user, context={"request": request}).data,
-            },
-            status=status.HTTP_201_CREATED,
         )
 
 

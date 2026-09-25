@@ -1,5 +1,7 @@
 from django.http import HttpResponse
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+
+from security.permissions import AreaInventario
 
 from .reportes import (
     MAX_COLUMNAS_PROVEEDOR_PDF,
@@ -14,6 +16,7 @@ from .reportes import (
 
 
 @api_view(["GET"])
+@permission_classes([AreaInventario])
 def exportar_existencias_excel(request):
     lotes = obtener_lotes_filtrados(request.query_params)
     modo = request.query_params.get("modo", "producto")
@@ -33,6 +36,7 @@ def exportar_existencias_excel(request):
 
 
 @api_view(["GET"])
+@permission_classes([AreaInventario])
 def exportar_existencias_pdf(request):
     lotes = obtener_lotes_filtrados(request.query_params)
     modo = request.query_params.get("modo", "producto")

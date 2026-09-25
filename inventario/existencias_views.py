@@ -1,5 +1,7 @@
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+
+from security.permissions import AreaInventario
 
 from .models import SalidaDetalle
 from .reportes import obtener_lotes_filtrados
@@ -31,6 +33,7 @@ def _serializar(lote):
 
 
 @api_view(['GET'])
+@permission_classes([AreaInventario])
 def listar_existencias(request):
     """
     Foto plana del inventario disponible: una fila por lote con existencia.

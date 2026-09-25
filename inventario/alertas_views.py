@@ -1,5 +1,7 @@
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+
+from security.permissions import AreaInventario
 
 from .alertas import obtener_lotes_por_vencer
 
@@ -22,6 +24,7 @@ def _serializar(item):
 
 
 @api_view(['GET'])
+@permission_classes([AreaInventario])
 def listar_alertas_caducidad(request):
     alertas = obtener_lotes_por_vencer(request.query_params)
 

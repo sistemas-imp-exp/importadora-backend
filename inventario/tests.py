@@ -2,11 +2,13 @@ import importlib
 from datetime import timedelta
 from decimal import Decimal
 
-from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APITestCase
+
+from security.permissions import AREA_INVENTARIO
+from security.testing import crear_usuario_con_area
 
 from .alertas import clasificar_nivel, obtener_lotes_por_vencer
 from .models import Camara, Cliente, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral, Salida, SalidaDetalle, MovimientoCamara
@@ -331,7 +333,7 @@ class MovimientoCamaraModelTests(TestCase):
 
 class CamaraApiTests(APITestCase):
     def setUp(self):
-        user = get_user_model().objects.create_user(username="tester", password="x")
+        user = crear_usuario_con_area("tester", AREA_INVENTARIO)
         self.client.force_authenticate(user=user)
 
     def test_crear_y_listar_camaras(self):
@@ -349,7 +351,7 @@ class CamaraApiTests(APITestCase):
 
 class EntradaApiTests(APITestCase):
     def setUp(self):
-        user = get_user_model().objects.create_user(username="tester2", password="x")
+        user = crear_usuario_con_area("tester2", AREA_INVENTARIO)
         self.client.force_authenticate(user=user)
         self.proveedor = Proveedor.objects.create(nombre="CACESA")
         self.camara = Camara.objects.create(nombre="IMPORTADORA2", tipo=Camara.TIPO_PROPIA)
@@ -380,7 +382,7 @@ class EntradaApiTests(APITestCase):
 
 class EntradaCreacionAnidadaApiTests(APITestCase):
     def setUp(self):
-        self.user = get_user_model().objects.create_user(username="tester3", password="x")
+        self.user = crear_usuario_con_area("tester3", AREA_INVENTARIO)
         self.client.force_authenticate(user=self.user)
         self.proveedor = Proveedor.objects.create(nombre="CACESA")
         self.camara = Camara.objects.create(nombre="IMPORTADORA3", tipo=Camara.TIPO_PROPIA)
@@ -589,7 +591,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
 
 class SalidaCreacionAnidadaApiTests(APITestCase):
     def setUp(self):
-        user = get_user_model().objects.create_user(username="tester4", password="x")
+        user = crear_usuario_con_area("tester4", AREA_INVENTARIO)
         self.client.force_authenticate(user=user)
         self.proveedor = Proveedor.objects.create(nombre="CACESA")
         self.cliente = Cliente.objects.create(nombre="HERAY ACERO MORENO")
@@ -739,7 +741,7 @@ class SalidaCreacionAnidadaApiTests(APITestCase):
 
 class MovimientoCamaraApiTests(APITestCase):
     def setUp(self):
-        user = get_user_model().objects.create_user(username="tester5", password="x")
+        user = crear_usuario_con_area("tester5", AREA_INVENTARIO)
         self.client.force_authenticate(user=user)
         self.proveedor = Proveedor.objects.create(nombre="ACUAMAYA")
         self.camara_origen = Camara.objects.create(nombre="FRIGARSA", tipo=Camara.TIPO_TERCERO)
@@ -875,7 +877,7 @@ class AlertasCaducidadTests(TestCase):
 
 class AlertasCaducidadApiTests(APITestCase):
     def setUp(self):
-        user = get_user_model().objects.create_user(username="tester6", password="x")
+        user = crear_usuario_con_area("tester6", AREA_INVENTARIO)
         self.client.force_authenticate(user=user)
         self.proveedor = Proveedor.objects.create(nombre="ACUAMAYA")
         self.camara = Camara.objects.create(nombre="FRIGARSA", tipo=Camara.TIPO_TERCERO)

@@ -19,6 +19,15 @@
                 <li class="nav-item">
                     <a class="nav-link" href="{% url 'administrar_divisas' %}">Divisas</a>
                 </li>
+                {% if user.is_authenticated %}
+                    <li class="nav-item">
+                        {# LogoutView solo acepta POST #}
+                        <form method="post" action="{% url 'core_logout' %}" class="d-inline">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-link nav-link">Salir ({{ user.username }})</button>
+                        </form>
+                    </li>
+                {% endif %}
             </ul>
         </div>
     </nav>

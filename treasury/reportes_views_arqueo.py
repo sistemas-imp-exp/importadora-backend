@@ -1,7 +1,9 @@
 from django.http import HttpResponse
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+
+from security.permissions import AreaTesoreria
 
 from .models import ArqueoCaja
 from .reportes_arqueo import calcular_resumen_arqueo, construir_libro_excel_arqueo, construir_pdf_arqueo, nombre_archivo_arqueo
@@ -18,6 +20,7 @@ def _obtener_arqueo(arqueo_id):
 
 
 @api_view(["GET"])
+@permission_classes([AreaTesoreria])
 def exportar_arqueo_excel(request, arqueo_id):
     arqueo = _obtener_arqueo(arqueo_id)
     if not arqueo:
@@ -35,6 +38,7 @@ def exportar_arqueo_excel(request, arqueo_id):
 
 
 @api_view(["GET"])
+@permission_classes([AreaTesoreria])
 def exportar_arqueo_pdf(request, arqueo_id):
     arqueo = _obtener_arqueo(arqueo_id)
     if not arqueo:
