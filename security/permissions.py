@@ -2,23 +2,27 @@ from functools import wraps
 
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 AREA_TESORERIA = "TES"
 AREA_INVENTARIO = "INV"
 AREA_ADMIN = "ADMIN"
 
 
-def tiene_area(user, codigo):
+def tiene_area(user, codigo, escritura=False):
     """
-    Misma regla que `hasArea` del frontend (AuthProvider): el superusuario pasa
-    siempre; los demás necesitan el área asignada y activa.
+    Misma regla que `hasArea`/`puedeEditar` del frontend (AuthProvider): el
+    superusuario pasa siempre; los demás necesitan el área asignada y activa,
+    y para escribir (crear, editar, eliminar) además que no sea de solo lectura.
     """
     if not (user and user.is_authenticated):
         return False
     if user.is_superuser:
         return True
-    return user.areas.filter(area__codigo=codigo, area__activo=True).exists()
+    asignaciones = user.areas.filter(area__codigo=codigo, area__activo=True)
+    if escritura:
+        asignaciones = asignaciones.filter(solo_lectura=False)
+    return asignaciones.exists()
 
 
 class TieneArea(BasePermission):
@@ -28,7 +32,13 @@ class TieneArea(BasePermission):
     message = "No tienes acceso a esta área."
 
     def has_permission(self, request, view):
-        return tiene_area(request.user, self.area)
+        # Consultar y descargar son GET/HEAD/OPTIONS; todo lo demás modifica.
+        escritura = request.method not in SAFE_METHODS
+        if tiene_area(request.user, self.area, escritura=escritura):
+            return True
+        if escritura and tiene_area(request.user, self.area):
+            self.message = "Tu acceso a esta área es de solo lectura."
+        return False
 
 
 class AreaTesoreria(TieneArea):
@@ -49,7 +59,7 @@ def area_requerida(codigo):
         @wraps(vista)
         @login_required
         def envoltura(request, *args, **kwargs):
-            if not tiene_area(request.user, codigo):
+            if not tiene_area(request.user, codigo, escritura=request.method not in SAFE_METHODS):
                 raise PermissionDenied
             return vista(request, *args, **kwargs)
 

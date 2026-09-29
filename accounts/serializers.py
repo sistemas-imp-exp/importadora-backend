@@ -43,19 +43,27 @@ def _url_foto(usuario, request):
 
 class UsuarioMeSerializer(serializers.ModelSerializer):
     areas = serializers.SerializerMethodField()
+    areas_solo_lectura = serializers.SerializerMethodField()
     foto = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email',
-            'is_superuser', 'areas', 'foto',
+            'is_superuser', 'areas', 'areas_solo_lectura', 'foto',
         ]
 
     def get_areas(self, obj):
         # Solo activas: mismo criterio que security.permissions.tiene_area, para
         # que el menú del frontend no ofrezca módulos que el backend va a negar.
         return [ua.area.codigo for ua in obj.areas.select_related('area').filter(area__activo=True)]
+
+    def get_areas_solo_lectura(self, obj):
+        """Subconjunto de `areas` en el que el usuario solo consulta y descarga."""
+        return [
+            ua.area.codigo
+            for ua in obj.areas.select_related('area').filter(area__activo=True, solo_lectura=True)
+        ]
 
     def get_foto(self, obj):
         return _url_foto(obj, self.context.get('request'))
@@ -115,13 +123,15 @@ class FotoPerfilSerializer(serializers.ModelSerializer):
 class UsuarioCatalogoSerializer(serializers.ModelSerializer):
     foto = serializers.SerializerMethodField()
     areas = serializers.ListField(child=serializers.CharField(), required=False, write_only=True)
+    # Subconjunto de `areas` que se asigna en solo lectura (consulta y descarga).
+    areas_solo_lectura = serializers.ListField(child=serializers.CharField(), required=False, write_only=True)
     password = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email',
-            'is_active', 'is_superuser', 'foto', 'areas', 'password',
+            'is_active', 'is_superuser', 'foto', 'areas', 'areas_solo_lectura', 'password',
         ]
 
     def get_foto(self, obj):
@@ -151,6 +161,17 @@ class UsuarioCatalogoSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        solo_lectura = attrs.get('areas_solo_lectura')
+        if solo_lectura:
+            asignadas = attrs.get('areas')
+            if asignadas is None and self.instance is not None:
+                asignadas = list(self.instance.areas.values_list('area__codigo', flat=True))
+            sobrantes = set(solo_lectura) - set(asignadas or [])
+            if sobrantes:
+                raise serializers.ValidationError({
+                    'areas_solo_lectura': "Solo lectura en área(s) no asignada(s): " + ", ".join(sorted(sobrantes)) + ".",
+                })
+
         if self.instance is None and not attrs.get('password'):
             raise serializers.ValidationError({'password': 'La contraseña es obligatoria al crear un usuario.'})
 
@@ -165,18 +186,20 @@ class UsuarioCatalogoSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         areas = validated_data.pop('areas', [])
+        solo_lectura = validated_data.pop('areas_solo_lectura', [])
         password = validated_data.pop('password')
 
         with transaction.atomic():
             user = User(**validated_data)
             user.set_password(password)
             user.save()
-            self._sincronizar_areas(user, areas)
+            self._sincronizar_areas(user, areas, solo_lectura)
 
         return user
 
     def update(self, instance, validated_data):
         areas = validated_data.pop('areas', None)
+        solo_lectura = validated_data.pop('areas_solo_lectura', None)
         password = validated_data.pop('password', None)
 
         with transaction.atomic():
@@ -186,12 +209,14 @@ class UsuarioCatalogoSerializer(serializers.ModelSerializer):
                 instance.set_password(password)
             instance.save()
 
-            if areas is not None:
-                self._sincronizar_areas(instance, areas)
+            if areas is not None or solo_lectura is not None:
+                if areas is None:
+                    areas = list(instance.areas.values_list('area__codigo', flat=True))
+                self._sincronizar_areas(instance, areas, solo_lectura or [])
 
         return instance
 
-    def _sincronizar_areas(self, usuario, codigos):
+    def _sincronizar_areas(self, usuario, codigos, solo_lectura):
         UsuarioArea.objects.filter(usuario=usuario).exclude(area__codigo__in=codigos).delete()
 
         existentes = set(
@@ -203,10 +228,15 @@ class UsuarioCatalogoSerializer(serializers.ModelSerializer):
             if area.codigo not in existentes
         ]
         UsuarioArea.objects.bulk_create(nuevas)
+        asignaciones = UsuarioArea.objects.filter(usuario=usuario)
+        asignaciones.filter(area__codigo__in=solo_lectura).update(solo_lectura=True)
+        asignaciones.exclude(area__codigo__in=solo_lectura).update(solo_lectura=False)
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data['areas'] = list(
-            UsuarioArea.objects.filter(usuario=instance).values_list('area__codigo', flat=True)
+        asignaciones = list(
+            UsuarioArea.objects.filter(usuario=instance).values_list('area__codigo', 'solo_lectura')
         )
+        data['areas'] = [codigo for codigo, _ in asignaciones]
+        data['areas_solo_lectura'] = [codigo for codigo, solo in asignaciones if solo]
         return data

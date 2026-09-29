@@ -143,3 +143,81 @@ class PantallasLegadasCoreTests(TestCase):
         self.assertEqual(self.client.get("/login/").status_code, 200)
         respuesta = self.client.post("/login/", {"username": "cajero", "password": "Clave-segura-123"})
         self.assertRedirects(respuesta, "/")
+
+
+class SoloLecturaApiTests(APITestCase):
+    """
+    Un área asignada en solo lectura deja consultar y descargar (GET) todo el
+    módulo, pero ninguna escritura. Recorre todas las rutas, igual que
+    PermisosPorAreaApiTests, para que un endpoint nuevo no se escape.
+    """
+
+    # Auditoría de entradas es de superusuario (EsSuperusuario), no del área.
+    RUTAS_LECTURA = [r for r in RUTAS_INVENTARIO if "auditoria" not in r]
+
+    def setUp(self):
+        self.lector = crear_usuario_con_area("lector", AREA_INVENTARIO, solo_lectura=True)
+        self.client.force_authenticate(user=self.lector)
+
+    def test_puede_consultar_y_descargar_todo_el_modulo(self):
+        for ruta in self.RUTAS_LECTURA:
+            with self.subTest(ruta=ruta):
+                self.assertNotEqual(self.client.get(ruta).status_code, 403)
+
+    def test_ninguna_escritura_esta_permitida(self):
+        for ruta in RUTAS_INVENTARIO:
+            for metodo in ("post", "put", "patch", "delete"):
+                with self.subTest(ruta=ruta, metodo=metodo):
+                    self.assertEqual(getattr(self.client, metodo)(ruta, {}, format="json").status_code, 403)
+
+    def test_el_mensaje_explica_que_es_solo_lectura(self):
+        respuesta = self.client.post("/api/inventario/camaras/", {"nombre": "NUEVA", "tipo": "propia"}, format="json")
+        self.assertEqual(respuesta.status_code, 403)
+        self.assertIn("solo lectura", str(respuesta.data["detail"]))
+
+    def test_quitar_solo_lectura_devuelve_la_escritura(self):
+        self.lector.areas.update(solo_lectura=False)
+        respuesta = self.client.post("/api/inventario/camaras/", {"nombre": "NUEVA", "tipo": "propia"}, format="json")
+        self.assertEqual(respuesta.status_code, 201, respuesta.data)
+
+    def test_me_informa_las_areas_de_solo_lectura(self):
+        datos = self.client.get("/api/auth/me/").data
+        self.assertEqual(datos["areas"], [AREA_INVENTARIO])
+        self.assertEqual(datos["areas_solo_lectura"], [AREA_INVENTARIO])
+
+
+class AsignarSoloLecturaApiTests(APITestCase):
+    def setUp(self):
+        admin = get_user_model().objects.create_superuser(username="admin", password="x")
+        self.client.force_authenticate(user=admin)
+
+    def _crear(self, **extra):
+        payload = {"username": "nuevo", "password": "Clave-segura-123", "areas": [AREA_INVENTARIO], **extra}
+        return self.client.post("/api/auth/usuarios/", payload, format="json")
+
+    def test_superusuario_asigna_un_area_en_solo_lectura(self):
+        respuesta = self._crear(areas_solo_lectura=[AREA_INVENTARIO])
+
+        self.assertEqual(respuesta.status_code, 201, respuesta.data)
+        self.assertEqual(respuesta.data["areas_solo_lectura"], [AREA_INVENTARIO])
+        usuario = get_user_model().objects.get(username="nuevo")
+        self.assertTrue(usuario.areas.get().solo_lectura)
+
+        # Editar sin mandar la lista la deja igual; mandarla vacía devuelve la escritura.
+        self.client.patch(f"/api/auth/usuarios/{usuario.id}/", {"first_name": "X"}, format="json")
+        self.assertTrue(usuario.areas.get().solo_lectura)
+        self.client.patch(f"/api/auth/usuarios/{usuario.id}/", {"areas_solo_lectura": []}, format="json")
+        self.assertFalse(usuario.areas.get().solo_lectura)
+
+    def test_solo_lectura_en_area_no_asignada_se_rechaza(self):
+        respuesta = self._crear(areas_solo_lectura=[AREA_TESORERIA])
+        self.assertEqual(respuesta.status_code, 400)
+        self.assertIn("areas_solo_lectura", respuesta.data)
+
+
+class PantallasLegadasSoloLecturaTests(TestCase):
+    def test_con_tesoreria_en_solo_lectura_ve_pero_no_abre_corte(self):
+        self.client.force_login(crear_usuario_con_area("cajero", AREA_TESORERIA, solo_lectura=True))
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(self.client.post("/apertura/", {"fecha": "2026-09-25"}).status_code, 403)
+        self.assertFalse(CorteCaja.objects.exists())

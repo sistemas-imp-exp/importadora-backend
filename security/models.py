@@ -29,6 +29,10 @@ class UsuarioArea(models.Model):
         related_name="usuarios"
     )
 
+    # Con solo lectura el usuario consulta y descarga (GET) pero no crea,
+    # edita ni elimina en el área. Ver security.permissions.tiene_area.
+    solo_lectura = models.BooleanField(default=False)
+
     class Meta:
         unique_together = ("usuario", "area")
         verbose_name = "Área de usuario"
