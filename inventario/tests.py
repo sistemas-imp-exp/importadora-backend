@@ -969,6 +969,7 @@ class EmpresaEntradaApiTests(APITestCase):
             sorted((e["detalle_id"], e["camara_nombre"]) for e in existencias),
             sorted([(lote_sel, "IMPORTADORA"), (movimiento.data["entrada_detalle_destino"], "MEXIDELI")]),
         )
+        self.assertEqual({e["empresa_nombre"] for e in existencias}, {"MARISCOS SELECTOS"})
         excel = self.client.get(f"/api/inventario/reportes/existencias/excel/?modo=lote&empresa={self.selectos.id}")
         self.assertEqual(excel.status_code, 200)
 

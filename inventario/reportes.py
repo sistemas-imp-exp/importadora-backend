@@ -53,7 +53,7 @@ def obtener_lotes_filtrados(params, ids_extra=None):
             # propósito: solo la recorren los lotes sin proveedor (los que
             # llegaron por un traslado), y arrastrarla sumaba ~40 columnas a
             # cada fila de una consulta que ya devuelve miles.
-            'entrada__proveedor',
+            'entrada__proveedor', 'entrada__empresa',
         )
         .annotate(
             kilos_vendidos=Coalesce(

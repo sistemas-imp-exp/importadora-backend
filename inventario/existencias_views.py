@@ -12,6 +12,8 @@ def _serializar(lote):
     return {
         'detalle_id': lote.id,
         'fecha': lote.entrada.fecha.isoformat(),
+        'empresa_id': lote.entrada.empresa_id,
+        'empresa_nombre': lote.entrada.empresa.nombre if lote.entrada.empresa_id else '—',
         'producto_id': lote.producto_id,
         'precio_venta_planeado': str(lote.precio_venta_planeado) if lote.precio_venta_planeado is not None else None,
         'camara_id': lote.camara_id,
