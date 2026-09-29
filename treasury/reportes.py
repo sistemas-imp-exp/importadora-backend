@@ -16,7 +16,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .models import CorteCaja, Divisa, MovimientoDivisa, MovimientoTesoreria
+from .models import Divisa, MovimientoDivisa, MovimientoTesoreria
 
 PREVIEW_LIMIT = 20
 
@@ -54,13 +54,9 @@ def obtener_lineas_filtradas(params):
 
     lineas = (
         MovimientoDivisa.objects
-        .select_related("movimiento", "movimiento__corte", "divisa")
-        .filter(movimiento__fecha__date__gte=fecha_inicio, movimiento__fecha__date__lte=fecha_fin)
+        .select_related("movimiento", "divisa")
+        .filter(movimiento__fecha__gte=fecha_inicio, movimiento__fecha__lte=fecha_fin)
     )
-
-    corte_id = params.get("corte")
-    if corte_id:
-        lineas = lineas.filter(movimiento__corte_id=corte_id)
 
     tipo = params.get("tipo")
     if tipo in (MovimientoTesoreria.INGRESO, MovimientoTesoreria.EGRESO):
@@ -121,7 +117,7 @@ def construir_libro_excel(lineas, resumen):
 
     ws = wb.active
     ws.title = "Detalle"
-    encabezados = ["Folio", "Fecha", "Corte", "Tipo", "Autorizó", "Beneficiario", "Concepto", "Divisa", "Cantidad", "Estado"]
+    encabezados = ["Folio", "Fecha", "Tipo", "Autorizó", "Beneficiario", "Concepto", "Divisa", "Cantidad", "Estado"]
     ws.append(encabezados)
     _estilizar_encabezado(ws, len(encabezados))
 
@@ -132,8 +128,7 @@ def construir_libro_excel(lineas, resumen):
         m = linea.movimiento
         ws.append([
             m.folio,
-            timezone.localtime(m.fecha).strftime("%d/%m/%Y"),
-            m.corte_id or "",
+            m.fecha.strftime("%d/%m/%Y"),
             m.get_tipo_display(),
             m.autorizo,
             m.beneficiario,
@@ -143,14 +138,14 @@ def construir_libro_excel(lineas, resumen):
             "Cancelado" if m.cancelado else "Activo",
         ])
         fila = ws.max_row
-        ws.cell(row=fila, column=9).number_format = "#,##0.00"
+        ws.cell(row=fila, column=8).number_format = "#,##0.00"
         if m.cancelado:
             for col in range(1, len(encabezados) + 1):
                 celda = ws.cell(row=fila, column=col)
                 celda.font = font_cancelado
                 celda.fill = fill_cancelado
 
-    anchos = {"A": 14, "B": 12, "C": 8, "D": 10, "E": 20, "F": 28, "G": 32, "H": 8, "I": 14, "J": 10}
+    anchos = {"A": 14, "B": 12, "C": 10, "D": 20, "E": 28, "F": 32, "G": 8, "H": 14, "I": 10}
     for col, ancho in anchos.items():
         ws.column_dimensions[col].width = ancho
     ws.freeze_panes = "A2"
@@ -190,13 +185,6 @@ def describir_filtros(params):
     """
     partes = []
 
-    corte_id = params.get("corte")
-    if corte_id:
-        corte = CorteCaja.objects.filter(pk=corte_id).first()
-        if corte:
-            partes.append(f"Corte del {timezone.localtime(corte.fecha).strftime('%d/%m/%Y')} (#{corte.id})")
-        else:
-            partes.append(f"Corte #{corte_id}")
 
     tipo_nombre = dict(MovimientoTesoreria.TIPO_CHOICES).get(params.get("tipo"))
     if tipo_nombre:
@@ -334,7 +322,7 @@ def construir_pdf_movimientos(lineas, resumen, fecha_inicio, fecha_fin, filtros_
 
     # --- Detalle ---
     elementos.append(Paragraph("Detalle de movimientos", estilo_h2))
-    encabezados_detalle = ["Folio", "Fecha", "Corte", "Tipo", "Autorizó", "Beneficiario", "Concepto", "Divisa", "Cantidad", "Estado"]
+    encabezados_detalle = ["Folio", "Fecha", "Tipo", "Autorizó", "Beneficiario", "Concepto", "Divisa", "Cantidad", "Estado"]
     filas_detalle = [encabezados_detalle]
 
     for linea in lineas:
@@ -342,8 +330,7 @@ def construir_pdf_movimientos(lineas, resumen, fecha_inicio, fecha_fin, filtros_
         cancelado = m.cancelado
         filas_detalle.append([
             _celda_detalle(m.folio, TA_LEFT, cancelado),
-            _celda_detalle(timezone.localtime(m.fecha).strftime("%d/%m/%Y"), TA_CENTER, cancelado),
-            _celda_detalle(f"#{m.corte_id}" if m.corte_id else "-", TA_CENTER, cancelado),
+            _celda_detalle(m.fecha.strftime("%d/%m/%Y"), TA_CENTER, cancelado),
             _celda_detalle(m.get_tipo_display(), TA_CENTER, cancelado),
             _celda_detalle(m.autorizo, TA_LEFT, cancelado),
             _celda_detalle(m.beneficiario, TA_LEFT, cancelado),
@@ -356,7 +343,7 @@ def construir_pdf_movimientos(lineas, resumen, fecha_inicio, fecha_fin, filtros_
     if len(filas_detalle) == 1:
         elementos.append(Paragraph("No hay movimientos para los filtros seleccionados.", ESTILOS["Normal"]))
     else:
-        anchos_detalle = [2 * cm, 2.3 * cm, 1.5 * cm, 1.7 * cm, 3 * cm, 3.8 * cm, 4.6 * cm, 1.4 * cm, 2.3 * cm, 1.9 * cm]
+        anchos_detalle = [2 * cm, 2.3 * cm, 1.7 * cm, 3 * cm, 3.8 * cm, 6.1 * cm, 1.4 * cm, 2.3 * cm, 1.9 * cm]
         tabla_detalle = Table(filas_detalle, colWidths=anchos_detalle, repeatRows=1)
 
         estilo_detalle = [

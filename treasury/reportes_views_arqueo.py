@@ -12,7 +12,7 @@ from .reportes_arqueo import calcular_resumen_arqueo, construir_libro_excel_arqu
 def _obtener_arqueo(arqueo_id):
     return (
         ArqueoCaja.objects
-        .select_related('corte', 'usuario')
+        .select_related('usuario')
         .prefetch_related('divisas__divisa', 'divisas__conteos__denominacion')
         .filter(pk=arqueo_id)
         .first()

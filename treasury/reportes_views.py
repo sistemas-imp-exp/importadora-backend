@@ -34,7 +34,6 @@ def _serializar_linea(linea):
         "movimiento_id": m.id,
         "folio": m.folio,
         "fecha": m.fecha.isoformat(),
-        "corte": m.corte_id,
         "tipo": m.tipo,
         "autorizo": m.autorizo,
         "beneficiario": m.beneficiario,

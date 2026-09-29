@@ -1,10 +1,18 @@
+from decimal import Decimal
+
+from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.utils import timezone
+from rest_framework import serializers
+
 from .models import (
+    AperturaDivisa,
+    AperturaPeriodo,
     ArqueoCaja,
     ArqueoConteo,
     ArqueoDivisa,
     Banco,
     ConfiguracionFolio,
-    CorteCaja,
     Denominacion,
     Divisa,
     Empleado,
@@ -15,21 +23,17 @@ from .models import (
     NominaSemanal,
     Puesto,
     Rancho,
-    SaldoCaja,
 )
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.contrib.auth import get_user_model
-from django.utils import timezone
-from rest_framework import serializers
-from django.db import transaction
-from decimal import Decimal
+from .saldos import resumen_dia
 
 User = get_user_model()
+
 
 class UsuarioResponsableSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'username', 'first_name', 'last_name']
+
 
 class DivisaSerializer(serializers.ModelSerializer):
     class Meta:
@@ -43,21 +47,10 @@ class MovimientoDivisaSerializer(serializers.ModelSerializer):
         source='divisa', queryset=Divisa.objects.filter(activa=True), write_only=True
     )  # para POST/PUT: solo el id
 
-
     class Meta:
         model = MovimientoDivisa
         fields = ['id', 'divisa', 'divisa_id', 'cantidad']
 
-class CorteCajaSimpleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = CorteCaja
-        fields = [
-            'id',
-            'fecha',
-            'cerrado',
-            'responsable_apertura',
-            'responsable_cierre'
-        ]
 
 def _avanzar_folio(tipo, folio_valor):
     """Adelanta el consecutivo sugerido de folio si el folio usado (editado o no) lo supera."""
@@ -71,27 +64,37 @@ def _avanzar_folio(tipo, folio_valor):
         config.save()
 
 
+def _usuario_sesion(serializer):
+    """El usuario que queda registrado siempre es el de la sesión, nunca un dato del cliente."""
+    return serializer.context['request'].user
+
+
 class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
     # Declarado explícito para que DRF no agregue su UniqueValidator automático
     # (mensaje técnico); la unicidad la valida validate_folio() más abajo.
     folio = serializers.CharField(max_length=20)
     divisas = MovimientoDivisaSerializer(many=True)
-    corte = CorteCajaSimpleSerializer(read_only=True)
+    usuario = UsuarioResponsableSerializer(read_only=True)
+    editado_por = UsuarioResponsableSerializer(read_only=True)
     usuario_cancelacion = UsuarioResponsableSerializer(read_only=True)
-    archivos_count = serializers.IntegerField(source='archivos.count', read_only=True)
+    archivos_count = serializers.SerializerMethodField()
 
     class Meta:
         model = MovimientoTesoreria
         fields = [
-            'id', 'corte', 'fecha', 'folio', 'tipo', 'autorizo', 'beneficiario', 'concepto',
-            'creado', 'modificado', 'divisas',
-            'editado', 'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
+            'id', 'fecha', 'folio', 'tipo', 'autorizo', 'beneficiario', 'concepto',
+            'creado', 'modificado', 'divisas', 'usuario',
+            'editado', 'editado_por', 'editado_en',
+            'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
             'archivos_count',
         ]
         read_only_fields = [
-            'id', 'corte', 'fecha', 'creado', 'modificado', 'archivos_count',
-            'editado', 'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
+            'id', 'creado', 'modificado', 'archivos_count', 'usuario', 'editado', 'editado_por', 'editado_en',
+            'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
         ]
+
+    def get_archivos_count(self, obj):
+        return obj.archivos.filter(eliminado=False).count()
 
     def validate_folio(self, value):
         consulta = MovimientoTesoreria.objects.filter(folio=value)
@@ -102,89 +105,45 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, data):
-        # Ensure divisas provided
         divisas = data.get('divisas')
         if not divisas:
             raise serializers.ValidationError({'divisas': 'Debe incluir al menos una divisa con cantidad.'})
-        # Validar cantidades positivas
         for d in divisas:
             if Decimal(d.get('cantidad') or 0) <= 0:
                 raise serializers.ValidationError({'divisas': 'Las cantidades deben ser mayores que cero.'})
         return data
 
+    # Sin validación de saldo suficiente: al pasar hojas atrasadas es normal
+    # capturar un egreso antes que el ingreso del mismo día. Los días que
+    # quedan en negativo los marca la Caja diaria (treasury/saldos.py).
     def create(self, validated_data):
-        divisas_data = validated_data.pop("divisas")
-
-        corte_abierto = self._obtener_corte_abierto()
-
-        validated_data["corte"] = corte_abierto
-        validated_data["fecha"] = corte_abierto.fecha
-        validated_data["usuario"] = self.context["request"].user
- 
-
-        tipo = validated_data["tipo"]
-
-        if tipo == MovimientoTesoreria.EGRESO:
-            for item in divisas_data:
-                saldo = SaldoCaja.objects.get(
-                    corte=corte_abierto,
-                    divisa=item["divisa"]
-                )
-
-                if not saldo.tiene_saldo(item["cantidad"]):
-                    raise serializers.ValidationError(
-                        f"Saldo insuficiente para la divisa {saldo.divisa.codigo}. "
-                        f"Disponible: {saldo.saldo_disponible}"
-                    )
+        divisas_data = validated_data.pop('divisas')
+        validated_data['usuario'] = _usuario_sesion(self)
         with transaction.atomic():
             movimiento = MovimientoTesoreria.objects.create(**validated_data)
-
             for item in divisas_data:
-                MovimientoDivisa.objects.create(
-                    movimiento=movimiento,
-                    divisa=item["divisa"],
-                    cantidad=item["cantidad"]
-                )
-
-                saldo = SaldoCaja.objects.get(
-                    corte=corte_abierto,
-                    divisa=item["divisa"]
-                )
-                saldo.actualizar_balance()
-
-            _avanzar_folio(tipo, movimiento.folio)
-
+                MovimientoDivisa.objects.create(movimiento=movimiento, divisa=item['divisa'], cantidad=item['cantidad'])
+            _avanzar_folio(movimiento.tipo, movimiento.folio)
         return movimiento
-
 
     def update(self, instance, validated_data):
         if instance.cancelado:
             raise serializers.ValidationError('No se puede editar un movimiento cancelado.')
-        if instance.corte and instance.corte.cerrado:
-            raise serializers.ValidationError('No se puede editar un movimiento de un corte cerrado.')
 
         divisas_data = validated_data.pop('divisas')
-        campos_simples = ['folio', 'tipo', 'autorizo', 'beneficiario', 'concepto']
         hubo_cambio = False
-
-        for campo in campos_simples:
-            if campo in validated_data and getattr(instance, campo) != validated_data[campo]:
-                hubo_cambio = True
+        for campo in ['fecha', 'folio', 'tipo', 'autorizo', 'beneficiario', 'concepto']:
             if campo in validated_data:
+                if getattr(instance, campo) != validated_data[campo]:
+                    hubo_cambio = True
                 setattr(instance, campo, validated_data[campo])
-
-        divisas_afectadas = set()
 
         with transaction.atomic():
             lineas_actuales = {linea.divisa_id: linea for linea in instance.divisas.all()}
             ids_nuevos = set()
-
             for item in divisas_data:
-                divisa = item['divisa']
-                cantidad = item['cantidad']
+                divisa, cantidad = item['divisa'], item['cantidad']
                 ids_nuevos.add(divisa.id)
-                divisas_afectadas.add(divisa.id)
-
                 linea = lineas_actuales.get(divisa.id)
                 if linea:
                     if linea.cantidad != cantidad:
@@ -194,71 +153,84 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
                 else:
                     hubo_cambio = True
                     MovimientoDivisa.objects.create(movimiento=instance, divisa=divisa, cantidad=cantidad)
-
             for divisa_id, linea in lineas_actuales.items():
                 if divisa_id not in ids_nuevos:
                     hubo_cambio = True
-                    divisas_afectadas.add(divisa_id)
                     linea.delete()
 
             if hubo_cambio:
                 instance.editado = True
-
+                instance.editado_por = _usuario_sesion(self)
+                instance.editado_en = timezone.now()
             instance.save()
-
-            if instance.tipo == MovimientoTesoreria.EGRESO and instance.corte:
-                for divisa_id in divisas_afectadas:
-                    saldo = SaldoCaja.objects.get(corte=instance.corte, divisa_id=divisa_id)
-                    if saldo.saldo_disponible < 0:
-                        raise serializers.ValidationError(
-                            f"Saldo insuficiente para la divisa {saldo.divisa.codigo} tras la edición. "
-                            f"Disponible: {saldo.saldo_disponible}"
-                        )
-
+            _avanzar_folio(instance.tipo, instance.folio)
         return instance
 
-    def _obtener_corte_abierto(self):
-        corte = CorteCaja.abierto()
 
-        if not corte:
-            raise serializers.ValidationError(
-                "No hay un corte de caja abierto. Abre uno antes de registrar movimientos."
-            )
-
-        return corte
-
-
-class SaldoCajaSerializer(serializers.ModelSerializer):
+class AperturaDivisaSerializer(serializers.ModelSerializer):
     divisa = DivisaSerializer(read_only=True)
+    divisa_id = serializers.PrimaryKeyRelatedField(source='divisa', queryset=Divisa.objects.all(), write_only=True)
 
     class Meta:
-        model = SaldoCaja
-        fields = ['id', 'corte', 'divisa', 'saldo_inicial', 'saldo_final', 'saldo_fisico', 'diferencia']
+        model = AperturaDivisa
+        fields = ['id', 'divisa', 'divisa_id', 'monto']
 
 
-class CorteCajaSerializer(serializers.ModelSerializer):
-    saldos = SaldoCajaSerializer(many=True, read_only=True)
-    # NUEVO: Creamos un campo específico para enviar el nombre al frontend
-    responsable_apertura = UsuarioResponsableSerializer(read_only=True)
-    responsable_cierre = UsuarioResponsableSerializer(read_only=True)
+class AperturaPeriodoSerializer(serializers.ModelSerializer):
+    saldos = AperturaDivisaSerializer(many=True)
+    creado_por = UsuarioResponsableSerializer(read_only=True)
+    editado_por = UsuarioResponsableSerializer(read_only=True)
 
     class Meta:
-        model = CorteCaja
-        fields = ['id', 'fecha', 'cerrado', 'fecha_cierre', 'responsable_apertura', 'responsable_cierre', 'observaciones', 'saldos']
-        read_only_fields = ['id', 'saldos']
+        model = AperturaPeriodo
+        fields = ['id', 'fecha', 'observaciones', 'saldos', 'creado_por', 'editado_por', 'creado', 'modificado']
+        read_only_fields = ['id', 'creado_por', 'editado_por', 'creado', 'modificado']
+
+    def validate_fecha(self, value):
+        if value > timezone.localdate():
+            raise serializers.ValidationError('La fecha de la apertura no puede ser futura.')
+        consulta = AperturaPeriodo.objects.filter(fecha=value)
+        if self.instance:
+            consulta = consulta.exclude(pk=self.instance.pk)
+        if consulta.exists():
+            raise serializers.ValidationError('Ya existe una apertura con esa fecha.')
+        return value
+
+    def validate(self, data):
+        saldos = data.get('saldos')
+        if saldos is not None:
+            if not saldos:
+                raise serializers.ValidationError({'saldos': 'Captura el saldo inicial de al menos una divisa.'})
+            ids = [s['divisa'].id for s in saldos]
+            if len(ids) != len(set(ids)):
+                raise serializers.ValidationError({'saldos': 'Cada divisa debe aparecer una sola vez.'})
+            if any(s['monto'] < 0 for s in saldos):
+                raise serializers.ValidationError({'saldos': 'El saldo inicial no puede ser negativo.'})
+        return data
+
+    def _guardar_saldos(self, apertura, saldos):
+        apertura.saldos.all().delete()
+        AperturaDivisa.objects.bulk_create(
+            [AperturaDivisa(apertura=apertura, divisa=s['divisa'], monto=s['monto']) for s in saldos]
+        )
 
     def create(self, validated_data):
-        usuario_actual = self.context["request"].user
-        # Use model class method; it will validate existence of open cut
-        try:
-            return CorteCaja.abrir_nuevo_corte(
-                fecha=validated_data.get('fecha'),
-                responsable_apertura=usuario_actual,
-                observaciones=validated_data.get('observaciones', ''),
-            )
-        except DjangoValidationError as exc:
-            # normaliza a algo que DRF sí traduce en 400 con "detail"
-            raise serializers.ValidationError({'detail': exc.messages[0]})
+        saldos = validated_data.pop('saldos')
+        with transaction.atomic():
+            apertura = AperturaPeriodo.objects.create(creado_por=_usuario_sesion(self), **validated_data)
+            self._guardar_saldos(apertura, saldos)
+        return apertura
+
+    def update(self, instance, validated_data):
+        saldos = validated_data.pop('saldos', None)
+        with transaction.atomic():
+            for campo, valor in validated_data.items():
+                setattr(instance, campo, valor)
+            instance.editado_por = _usuario_sesion(self)
+            instance.save()
+            if saldos is not None:
+                self._guardar_saldos(instance, saldos)
+        return instance
 
 
 class DenominacionSerializer(serializers.ModelSerializer):
@@ -304,17 +276,26 @@ class ArqueoDivisaSerializer(serializers.ModelSerializer):
 
 class ArqueoCajaSerializer(serializers.ModelSerializer):
     usuario = UsuarioResponsableSerializer(read_only=True)
-    corte = CorteCajaSimpleSerializer(read_only=True)
+    editado_por = UsuarioResponsableSerializer(read_only=True)
     divisas = ArqueoDivisaSerializer(many=True)
     leyenda_totales = serializers.CharField(read_only=True)
 
     class Meta:
         model = ArqueoCaja
         fields = [
-            'id', 'corte', 'hora_inicio', 'hora_termino', 'usuario',
+            'id', 'fecha', 'hora_inicio', 'hora_termino', 'usuario', 'editado_por', 'editado_en',
             'observaciones', 'creado', 'modificado', 'divisas', 'leyenda_totales',
         ]
-        read_only_fields = ['id', 'corte', 'hora_termino', 'usuario', 'creado', 'modificado']
+        read_only_fields = ['id', 'hora_termino', 'usuario', 'editado_por', 'editado_en', 'creado', 'modificado']
+
+    def validate_fecha(self, value):
+        if value > timezone.localdate():
+            raise serializers.ValidationError('La fecha del arqueo no puede ser futura.')
+        if AperturaPeriodo.vigente(value) is None:
+            raise serializers.ValidationError(
+                'No hay saldo inicial de caja para esa fecha: captura primero una apertura en Saldos iniciales.'
+            )
+        return value
 
     def validate(self, data):
         divisas_data = data.get('divisas')
@@ -326,9 +307,7 @@ class ArqueoCajaSerializer(serializers.ModelSerializer):
         faltantes = divisa_ids_activas - divisa_ids_enviados
         if faltantes:
             codigos = Divisa.objects.filter(id__in=faltantes).values_list('codigo', flat=True)
-            raise serializers.ValidationError({
-                'divisas': f"Falta el conteo de: {', '.join(codigos)}."
-            })
+            raise serializers.ValidationError({'divisas': f"Falta el conteo de: {', '.join(codigos)}."})
 
         for item in divisas_data:
             divisa = item['divisa']
@@ -339,91 +318,61 @@ class ArqueoCajaSerializer(serializers.ModelSerializer):
                     })
         return data
 
-    def _obtener_corte_abierto(self):
-        corte = CorteCaja.abierto()
-        if not corte:
-            raise serializers.ValidationError({
-                'detail': 'No hay un corte de caja abierto. Abre uno antes de hacer un arqueo.'
-            })
-        return corte
-
-    def _guardar_divisas(self, arqueo, divisas_data, corte):
-        divisas_previas = {linea.divisa_id: linea for linea in arqueo.divisas.all()} if arqueo.pk else {}
+    def _guardar_divisas(self, arqueo, divisas_data):
+        # Foto del saldo calculado de ese día en el momento del conteo.
+        _, filas = resumen_dia(arqueo.fecha)
+        esperado = {f['divisa'].id: f for f in filas}
+        previas = {linea.divisa_id: linea for linea in arqueo.divisas.all()}
         ids_enviados = set()
 
         for item in divisas_data:
             divisa = item['divisa']
-            conteos_data = item['conteos']
             ids_enviados.add(divisa.id)
-
-            saldo_caja, _ = SaldoCaja.objects.get_or_create(
-                corte=corte,
-                divisa=divisa,
-                defaults={'saldo_inicial': Decimal('0'), 'saldo_final': Decimal('0')},
-            )
-
-            arqueo_divisa = divisas_previas.get(divisa.id)
+            arqueo_divisa = previas.get(divisa.id)
             if arqueo_divisa:
                 arqueo_divisa.conteos.all().delete()
             else:
                 arqueo_divisa = ArqueoDivisa(arqueo=arqueo, divisa=divisa)
 
-            arqueo_divisa.saldo_inicial = saldo_caja.saldo_inicial
-            arqueo_divisa.resultado_esperado = saldo_caja.saldo_disponible
+            fila = esperado.get(divisa.id)
+            arqueo_divisa.saldo_inicial = fila['saldo_inicial'] if fila else Decimal('0')
+            arqueo_divisa.resultado_esperado = fila['saldo_final'] if fila else Decimal('0')
             arqueo_divisa.save()
 
-            for conteo in conteos_data:
+            for conteo in item['conteos']:
                 ArqueoConteo.objects.create(
-                    arqueo_divisa=arqueo_divisa,
-                    denominacion=conteo['denominacion'],
-                    piezas=conteo['piezas'],
+                    arqueo_divisa=arqueo_divisa, denominacion=conteo['denominacion'], piezas=conteo['piezas'],
                 )
-
             arqueo_divisa.recalcular_total()
 
-        for divisa_id, arqueo_divisa in divisas_previas.items():
+        for divisa_id, arqueo_divisa in previas.items():
             if divisa_id not in ids_enviados:
                 arqueo_divisa.delete()
 
     def create(self, validated_data):
         divisas_data = validated_data.pop('divisas')
-        corte = self._obtener_corte_abierto()
-
-        # Un solo arqueo por corte: si ya existe uno para el corte abierto,
-        # este "create" se convierte en un update sobre ese mismo arqueo
-        # (defensa adicional a la restricción unique=True de la base de datos).
-        existente = ArqueoCaja.objects.filter(corte=corte).first()
-        if existente:
-            return self.update(existente, {**validated_data, 'divisas': divisas_data})
-
         with transaction.atomic():
             arqueo = ArqueoCaja.objects.create(
-                corte=corte,
+                fecha=validated_data.get('fecha') or timezone.localdate(),
                 hora_inicio=validated_data['hora_inicio'],
                 hora_termino=timezone.now(),
-                usuario=self.context['request'].user,
+                usuario=_usuario_sesion(self),
                 observaciones=validated_data.get('observaciones', ''),
             )
-            self._guardar_divisas(arqueo, divisas_data, corte)
-
+            self._guardar_divisas(arqueo, divisas_data)
         return arqueo
 
     def update(self, instance, validated_data):
-        if instance.corte.cerrado:
-            raise serializers.ValidationError({'detail': 'No se puede editar un arqueo de un corte cerrado.'})
-
         divisas_data = validated_data.pop('divisas')
-        corte = instance.corte
-
         with transaction.atomic():
-            if 'observaciones' in validated_data:
-                instance.observaciones = validated_data['observaciones']
-            if 'hora_inicio' in validated_data:
-                instance.hora_inicio = validated_data['hora_inicio']
+            for campo in ('fecha', 'hora_inicio', 'observaciones'):
+                if campo in validated_data:
+                    setattr(instance, campo, validated_data[campo])
             instance.hora_termino = timezone.now()
+            instance.editado_por = _usuario_sesion(self)
+            instance.editado_en = timezone.now()
             instance.save()
-            self._guardar_divisas(instance, divisas_data, corte)
-
+            self._guardar_divisas(instance, divisas_data)
         return instance
 
 

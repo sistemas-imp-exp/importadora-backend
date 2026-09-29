@@ -1,30 +1,34 @@
 from accounts.permissions import EsSuperusuario
 from django.core.exceptions import ValidationError as DjangoValidationError
+from datetime import timedelta
+from decimal import Decimal
+
 from django.db.models import Count
+from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import mixins, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from security.permissions import AreaTesoreria
 from .models import (
+    AperturaPeriodo,
     ArqueoCaja,
     Banco,
     ConfiguracionFolio,
     Denominacion,
     Divisa,
-    CorteCaja,
     Empleado,
     MovimientoArchivo,
     NominaSemanal,
     Puesto,
     Rancho,
-    SaldoCaja,
     MovimientoTesoreria,
 )
 from .api_serializers import (
+    AperturaPeriodoSerializer,
     ArqueoCajaSerializer,
     BancoSerializer,
-    CorteCajaSerializer,
     DenominacionSerializer,
     DivisaSerializer,
     EmpleadoSerializer,
@@ -33,8 +37,8 @@ from .api_serializers import (
     NominaSemanalSerializer,
     PuestoSerializer,
     RanchoSerializer,
-    SaldoCajaSerializer,
 )
+from .saldos import historial, resumen_dia
 
 
 def _mensaje_de(exc: DjangoValidationError) -> str:
@@ -53,39 +57,100 @@ class DivisaViewSet(viewsets.ModelViewSet):
     serializer_class = DivisaSerializer
 
 
-class CorteCajaViewSet(viewsets.ModelViewSet):
+class AperturaPeriodoViewSet(viewsets.ModelViewSet):
+    """Saldos iniciales de caja por fecha (reemplazan la apertura/cierre de cortes)."""
     permission_classes = [AreaTesoreria]
-    # El serializer anida los dos responsables y los saldos con su divisa.
-    queryset = (
-        CorteCaja.objects
-        .select_related('responsable_apertura', 'responsable_cierre')
-        .prefetch_related('saldos__divisa')
-        .order_by('-fecha')
-    )
-    serializer_class = CorteCajaSerializer
+    queryset = AperturaPeriodo.objects.select_related('creado_por', 'editado_por').prefetch_related('saldos__divisa')
+    serializer_class = AperturaPeriodoSerializer
 
-    @action(detail=True, methods=['post'])
-    def close(self, request, pk=None):
-        corte = self.get_object()
-        if corte.cerrado:
-            return Response({'detail': 'El corte ya está cerrado.'}, status=status.HTTP_400_BAD_REQUEST)
-        responsable = request.data.get('responsable_cierre')
-        fecha_cierre = request.data.get('fecha_cierre')
-        try:
-            corte.close(responsable_cierre=request.user, fecha_cierre=fecha_cierre)
-        except DjangoValidationError as exc:
-            return Response({'detail': _mensaje_de(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # El físico de cada divisa se toma del arqueo más reciente de este corte
-        # (si se hizo alguno); si no hubo arqueo, saldo_fisico queda sin capturar.
-        ultimo_arqueo = corte.arqueos.order_by('-hora_termino').first()
-        if ultimo_arqueo:
-            for arqueo_divisa in ultimo_arqueo.divisas.select_related('divisa'):
-                saldo = corte.saldos.filter(divisa=arqueo_divisa.divisa).first()
-                if saldo:
-                    saldo.registrar_saldo_fisico(arqueo_divisa.total_contado)
+def _fecha_param(request, nombre, por_defecto):
+    texto = (request.query_params.get(nombre) or '').strip()
+    if not texto:
+        return por_defecto, None
+    fecha = parse_date(texto)
+    if fecha is None:
+        return None, Response({nombre: 'Fecha inválida, usa AAAA-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+    return fecha, None
 
-        return Response(self.get_serializer(corte).data)
+
+def _dinero(valor):
+    """Importe como texto con dos decimales, igual que los DecimalField del resto del API."""
+    return str(Decimal(valor).quantize(Decimal('0.01')))
+
+
+def _divisa_dict(divisa):
+    return {'id': divisa.id, 'codigo': divisa.codigo, 'simbolo': divisa.simbolo, 'nombre': divisa.nombre}
+
+
+class CajaDiariaViewSet(viewsets.ViewSet):
+    """
+    Consulta de caja por día (reemplaza al corte abierto/cerrado): saldos
+    calculados a partir de la apertura vigente, ver treasury/saldos.py.
+    """
+    permission_classes = [AreaTesoreria]
+
+    @action(detail=False, methods=['get'])
+    def dia(self, request):
+        fecha, error = _fecha_param(request, 'fecha', timezone.localdate())
+        if error:
+            return error
+        apertura, filas = resumen_dia(fecha)
+        movimientos = (
+            MovimientoTesoreria.objects.filter(fecha=fecha)
+            .select_related('usuario', 'editado_por', 'usuario_cancelacion')
+            .prefetch_related('divisas__divisa')
+            .order_by('creado')
+        )
+        return Response({
+            'fecha': fecha.isoformat(),
+            'apertura': {'id': apertura.id, 'fecha': apertura.fecha.isoformat()} if apertura else None,
+            'saldos': [
+                {
+                    'divisa': _divisa_dict(f['divisa']),
+                    'saldo_inicial': _dinero(f['saldo_inicial']),
+                    'ingresos': _dinero(f['ingresos']),
+                    'egresos': _dinero(f['egresos']),
+                    'saldo_final': _dinero(f['saldo_final']),
+                    'negativo': f['negativo'],
+                }
+                for f in filas
+            ],
+            'negativo': any(f['negativo'] for f in filas),
+            'movimientos': MovimientoTesoreriaSerializer(movimientos, many=True, context={'request': request}).data,
+        })
+
+    @action(detail=False, methods=['get'])
+    def historial(self, request):
+        hoy = timezone.localdate()
+        hasta, error = _fecha_param(request, 'hasta', hoy)
+        if error:
+            return error
+        desde, error = _fecha_param(request, 'desde', hasta - timedelta(days=30))
+        if error:
+            return error
+        if desde > hasta:
+            return Response({'desde': 'La fecha inicial no puede ser posterior a la final.'}, status=status.HTTP_400_BAD_REQUEST)
+        divisas = {d.id: d for d in Divisa.objects.all()}
+        dias = historial(desde, hasta)
+        return Response([
+            {
+                'fecha': d['fecha'].isoformat(),
+                'apertura': d['apertura'],
+                'movimientos': d['movimientos'],
+                'negativo': d['negativo'],
+                'saldos': [
+                    {
+                        'divisa': _divisa_dict(divisas[divisa_id]),
+                        'ingresos': _dinero(d['ingresos'].get(divisa_id, 0)),
+                        'egresos': _dinero(d['egresos'].get(divisa_id, 0)),
+                        'saldo_final': _dinero(saldo),
+                    }
+                    for divisa_id, saldo in sorted(d['saldos'].items(), key=lambda kv: divisas[kv[0]].codigo)
+                ],
+            }
+            for d in reversed(dias)
+        ])
 
 
 class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
@@ -95,9 +160,16 @@ class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        corte_id = self.request.query_params.get('corte')
-        if corte_id:
-            queryset = queryset.filter(corte_id=corte_id)
+        params = self.request.query_params
+        fecha = parse_date(params.get('fecha') or '')
+        if fecha:
+            queryset = queryset.filter(fecha=fecha)
+        desde = parse_date(params.get('desde') or '')
+        if desde:
+            queryset = queryset.filter(fecha__gte=desde)
+        hasta = parse_date(params.get('hasta') or '')
+        if hasta:
+            queryset = queryset.filter(fecha__lte=hasta)
         return queryset
 
     @action(detail=True, methods=['post'])
@@ -140,12 +212,6 @@ class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
         return Response([fila[campo] for fila in resultados])
 
 
-class SaldoCajaViewSet(viewsets.ReadOnlyModelViewSet):
-    permission_classes = [AreaTesoreria]
-    queryset = SaldoCaja.objects.select_related('divisa', 'corte').all()
-    serializer_class = SaldoCajaSerializer
-
-
 class DenominacionViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaTesoreria]
     # Sin filtrar por activa: el admin de denominaciones necesita ver también
@@ -172,21 +238,15 @@ class DenominacionViewSet(viewsets.ModelViewSet):
 
 class ArqueoCajaViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaTesoreria]
-    queryset = ArqueoCaja.objects.select_related('corte', 'usuario').prefetch_related('divisas__divisa', 'divisas__conteos__denominacion')
+    queryset = ArqueoCaja.objects.select_related('usuario', 'editado_por').prefetch_related('divisas__divisa', 'divisas__conteos__denominacion')
     serializer_class = ArqueoCajaSerializer
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        corte_id = self.request.query_params.get('corte')
-        if corte_id:
-            queryset = queryset.filter(corte_id=corte_id)
+        fecha = parse_date(self.request.query_params.get('fecha') or '')
+        if fecha:
+            queryset = queryset.filter(fecha=fecha)
         return queryset
-
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        if instance.corte.cerrado:
-            return Response({'detail': 'No se puede eliminar un arqueo de un corte cerrado.'}, status=status.HTTP_400_BAD_REQUEST)
-        return super().destroy(request, *args, **kwargs)
 
 
 class RanchoViewSet(viewsets.ModelViewSet):
@@ -245,9 +305,16 @@ class MovimientoArchivoViewSet(
 ):
     permission_classes = [AreaTesoreria]
     # Sin update: un adjunto se reemplaza subiendo uno nuevo y borrando el viejo.
-    queryset = MovimientoArchivo.objects.select_related('movimiento', 'subido_por')
+    queryset = MovimientoArchivo.objects.filter(eliminado=False).select_related('movimiento', 'subido_por')
     serializer_class = MovimientoArchivoSerializer
     parser_classes = [MultiPartParser, FormParser]
+
+    def perform_destroy(self, instance):
+        # No se borra: queda registrado quién lo quitó y cuándo (el archivo se conserva).
+        instance.eliminado = True
+        instance.eliminado_por = self.request.user
+        instance.eliminado_en = timezone.now()
+        instance.save(update_fields=['eliminado', 'eliminado_por', 'eliminado_en'])
 
     def get_queryset(self):
         queryset = super().get_queryset()

@@ -7,7 +7,6 @@ from rest_framework.test import APITestCase
 
 import inventario.api_urls
 import treasury.api_urls
-from treasury.models import CorteCaja
 
 from .models import Area
 from .permissions import AREA_INVENTARIO, AREA_TESORERIA
@@ -113,38 +112,6 @@ class RegistroPublicoCerradoTests(APITestCase):
         self.assertFalse(get_user_model().objects.filter(username="intruso").exists())
 
 
-class PantallasLegadasCoreTests(TestCase):
-    RUTAS = ["/", "/apertura/", "/movimiento/", "/movimientos/", "/cierre/", "/divisas/"]
-
-    def test_sin_sesion_redirige_al_login(self):
-        for ruta in self.RUTAS:
-            with self.subTest(ruta=ruta):
-                respuesta = self.client.get(ruta)
-                self.assertEqual(respuesta.status_code, 302)
-                self.assertTrue(respuesta["Location"].startswith("/login/?next="))
-
-    def test_post_anonimo_no_abre_corte(self):
-        self.client.post("/apertura/", {"fecha": "2026-09-25", "responsable_apertura": "x"})
-        self.assertFalse(CorteCaja.objects.exists())
-
-    def test_con_sesion_pero_sin_tesoreria_da_403(self):
-        self.client.force_login(crear_usuario_con_area("almacen", AREA_INVENTARIO))
-        for ruta in self.RUTAS:
-            with self.subTest(ruta=ruta):
-                self.assertEqual(self.client.get(ruta).status_code, 403)
-
-    def test_con_tesoreria_entra(self):
-        self.client.force_login(crear_usuario_con_area("cajero", AREA_TESORERIA))
-        self.assertEqual(self.client.get("/").status_code, 200)
-        self.assertEqual(self.client.get("/divisas/").status_code, 200)
-
-    def test_login_legado_inicia_sesion_y_redirige(self):
-        crear_usuario_con_area("cajero", AREA_TESORERIA, password="Clave-segura-123")
-        self.assertEqual(self.client.get("/login/").status_code, 200)
-        respuesta = self.client.post("/login/", {"username": "cajero", "password": "Clave-segura-123"})
-        self.assertRedirects(respuesta, "/")
-
-
 class SoloLecturaApiTests(APITestCase):
     """
     Un área asignada en solo lectura deja consultar y descargar (GET) todo el
@@ -214,10 +181,3 @@ class AsignarSoloLecturaApiTests(APITestCase):
         self.assertEqual(respuesta.status_code, 400)
         self.assertIn("areas_solo_lectura", respuesta.data)
 
-
-class PantallasLegadasSoloLecturaTests(TestCase):
-    def test_con_tesoreria_en_solo_lectura_ve_pero_no_abre_corte(self):
-        self.client.force_login(crear_usuario_con_area("cajero", AREA_TESORERIA, solo_lectura=True))
-        self.assertEqual(self.client.get("/").status_code, 200)
-        self.assertEqual(self.client.post("/apertura/", {"fecha": "2026-09-25"}).status_code, 403)
-        self.assertFalse(CorteCaja.objects.exists())

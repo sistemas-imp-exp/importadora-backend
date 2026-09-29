@@ -58,9 +58,7 @@ def _conteos_ordenados(linea_divisa):
 
 
 def nombre_archivo_arqueo(arqueo):
-    estado_corte = 'final' if arqueo.corte.cerrado else 'preliminar'
-    fecha = timezone.localtime(arqueo.corte.fecha).strftime('%Y-%m-%d')
-    return f"arqueo_{arqueo.id}_{fecha}_{estado_corte}"
+    return f"arqueo_{arqueo.id}_{arqueo.fecha:%Y-%m-%d}"
 
 
 # --- Excel ---
@@ -84,11 +82,10 @@ def construir_libro_excel_arqueo(arqueo, resumen):
     ws.append([f"RFC: {RFC_EMPRESA}"])
     ws.append([])
 
-    estado_corte = "FINAL (corte cerrado)" if arqueo.corte.cerrado else "PRELIMINAR (corte todavía abierto)"
-    ws.append([f"ARQUEO DE CAJA — {estado_corte}"])
+    ws.append(["ARQUEO DE CAJA"])
     ws.cell(row=ws.max_row, column=1).font = Font(bold=True, size=12)
-    ws.append([f"Arqueo N°: {arqueo.id}", "Corte:", f"#{arqueo.corte_id}"])
-    ws.append([f"Fecha: {timezone.localtime(arqueo.corte.fecha).strftime('%d/%m/%Y')}"])
+    ws.append([f"Arqueo N°: {arqueo.id}"])
+    ws.append([f"Fecha: {arqueo.fecha:%d/%m/%Y}"])
     ws.append([
         f"Hora inicio: {timezone.localtime(arqueo.hora_inicio).strftime('%H:%M')}",
         "Hora término:", timezone.localtime(arqueo.hora_termino).strftime('%H:%M'),
@@ -245,11 +242,6 @@ def construir_pdf_arqueo(arqueo, resumen):
     estilo_titulo = ParagraphStyle(
         "titulo", parent=ESTILOS["Heading1"], fontSize=14, alignment=TA_CENTER, spaceAfter=4,
     )
-    es_final = arqueo.corte.cerrado
-    estilo_estado = ParagraphStyle(
-        "estado_corte", parent=ESTILOS["Normal"], fontSize=10, alignment=TA_CENTER,
-        textColor=COLOR_SOBRANTE_RL if es_final else colors.HexColor("#B7791F"), spaceAfter=8,
-    )
     estilo_dato = ParagraphStyle("dato", parent=ESTILOS["Normal"], fontSize=9, spaceAfter=2)
     estilo_h2 = ParagraphStyle(
         "h2", parent=ESTILOS["Heading2"], fontSize=11.5, textColor=COLOR_ENCABEZADO_RL, spaceBefore=10, spaceAfter=4,
@@ -263,12 +255,8 @@ def construir_pdf_arqueo(arqueo, resumen):
         Paragraph(NOMBRE_EMPRESA, estilo_empresa),
         Paragraph(f"RFC: {RFC_EMPRESA}", estilo_rfc),
         Paragraph("ARQUEO DE CAJA", estilo_titulo),
-        Paragraph(
-            "ARQUEO FINAL — corte cerrado" if es_final else "ARQUEO PRELIMINAR — el corte sigue abierto",
-            estilo_estado,
-        ),
-        Paragraph(f"<b>Arqueo N°:</b> {arqueo.id} &nbsp;&nbsp; <b>Corte:</b> #{arqueo.corte_id}", estilo_dato),
-        Paragraph(f"<b>Fecha:</b> {timezone.localtime(arqueo.corte.fecha).strftime('%d/%m/%Y')}", estilo_dato),
+        Paragraph(f"<b>Arqueo N°:</b> {arqueo.id}", estilo_dato),
+        Paragraph(f"<b>Fecha:</b> {arqueo.fecha:%d/%m/%Y}", estilo_dato),
         Paragraph(
             f"<b>Hora inicio:</b> {timezone.localtime(arqueo.hora_inicio).strftime('%H:%M')} "
             f"&nbsp;&nbsp; <b>Hora término:</b> {timezone.localtime(arqueo.hora_termino).strftime('%H:%M')}",

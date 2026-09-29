@@ -1,9 +1,10 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from .api_views import (
+    AperturaPeriodoViewSet,
     ArqueoCajaViewSet,
     BancoViewSet,
-    CorteCajaViewSet,
+    CajaDiariaViewSet,
     DenominacionViewSet,
     DivisaViewSet,
     EmpleadoViewSet,
@@ -12,7 +13,6 @@ from .api_views import (
     NominaSemanalViewSet,
     PuestoViewSet,
     RanchoViewSet,
-    SaldoCajaViewSet,
 )
 from .reportes_views import resumen_movimientos, exportar_movimientos_excel, exportar_movimientos_pdf
 from .reportes_views_nomina import resumen_nomina, exportar_nomina_excel, exportar_nomina_pdf
@@ -20,9 +20,9 @@ from .reportes_views_arqueo import exportar_arqueo_excel, exportar_arqueo_pdf
 
 router = DefaultRouter()
 router.register(r'divisas', DivisaViewSet)
-router.register(r'cortes', CorteCajaViewSet)
+router.register(r'aperturas', AperturaPeriodoViewSet)
+router.register(r'caja', CajaDiariaViewSet, basename='caja')
 router.register(r'movimientos', MovimientoTesoreriaViewSet)
-router.register(r'saldos', SaldoCajaViewSet)
 router.register(r'denominaciones', DenominacionViewSet)
 router.register(r'arqueos', ArqueoCajaViewSet)
 router.register(r'archivos-movimiento', MovimientoArchivoViewSet)

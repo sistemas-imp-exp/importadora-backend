@@ -1,7 +1,3 @@
-from functools import wraps
-
-from django.contrib.auth.decorators import login_required
-from django.core.exceptions import PermissionDenied
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 AREA_TESORERIA = "TES"
@@ -48,21 +44,3 @@ class AreaTesoreria(TieneArea):
 class AreaInventario(TieneArea):
     area = AREA_INVENTARIO
 
-
-def area_requerida(codigo):
-    """
-    Equivalente de TieneArea para las vistas server-rendered (app `core`):
-    sin sesión redirige al login, con sesión pero sin el área responde 403.
-    """
-
-    def decorador(vista):
-        @wraps(vista)
-        @login_required
-        def envoltura(request, *args, **kwargs):
-            if not tiene_area(request.user, codigo, escritura=request.method not in SAFE_METHODS):
-                raise PermissionDenied
-            return vista(request, *args, **kwargs)
-
-        return envoltura
-
-    return decorador

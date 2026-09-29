@@ -55,7 +55,6 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     "mssql",
     'corsheaders',
-    'core',
     'treasury',
     'inventario',
     "accounts",
@@ -134,10 +133,6 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
-# Sesión de Django para las pantallas legadas de `core` (la API usa JWT).
-LOGIN_URL = "core_login"
-LOGIN_REDIRECT_URL = "index"
-LOGOUT_REDIRECT_URL = "core_login"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (

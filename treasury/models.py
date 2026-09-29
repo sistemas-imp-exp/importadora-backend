@@ -18,25 +18,35 @@ class Divisa(models.Model):
     def __str__(self):
         return self.codigo
 
-class CorteCaja(models.Model):
-    fecha = models.DateTimeField(unique=True)
-    cerrado = models.BooleanField(default=False)
-    fecha_cierre = models.DateTimeField(null=True, blank=True)
-    # responsable_apertura = models.ForeignKey(models)
-    responsable_apertura = models.ForeignKey(
-        settings.AUTH_USER_MODEL, 
-        on_delete=models.PROTECT,
-        related_name='cortes_aperturados'
-    )
-    responsable_cierre = models.ForeignKey(
+class AperturaPeriodo(models.Model):
+    """
+    Saldo inicial de caja a una fecha (por lo general el primer día de un mes).
+
+    Reemplaza al corte de caja abierto/cerrado: el saldo de cualquier día se
+    calcula a partir de la apertura más reciente anterior o igual a ese día,
+    más los ingresos y menos los egresos de las fechas posteriores (ver
+    treasury/saldos.py). Así los movimientos capturados con fecha atrasada
+    —las hojas físicas que no se alcanzan a pasar al día— corrigen solos los
+    saldos de los días siguientes. Una apertura nueva a mitad de periodo
+    reajusta el saldo a partir de su fecha (p. ej. tras un conteo físico).
+
+    Los montos cuentan como saldo al INICIO de su fecha: los movimientos de
+    ese mismo día se suman encima.
+    """
+    fecha = models.DateField(unique=True)
+    observaciones = models.TextField(blank=True)
+    creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
-        related_name='cortes_cerrados',
-        null=True,
-        blank=True
+        related_name='aperturas_registradas',
     )
-
-    observaciones = models.TextField(blank=True)
+    editado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='aperturas_editadas',
+        null=True,
+        blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
@@ -44,145 +54,28 @@ class CorteCaja(models.Model):
         ordering = ['-fecha']
 
     def __str__(self):
-        return f"CorteCaja {self.fecha} ({'Cerrado' if self.cerrado else 'Abierto'})"
-
-    def clean(self):
-        if self.cerrado and not self.fecha_cierre:
-            raise ValidationError('Un corte cerrado debe tener fecha de cierre.')
-        if self.fecha_cierre and not self.cerrado:
-            raise ValidationError('Si existe fecha de cierre, el corte debe estar marcado como cerrado.')
-
-    def close(self, responsable_cierre: str, fecha_cierre=None):
-        if self.cerrado:
-            raise ValidationError('El corte ya está cerrado.')
-        self.cerrado = True
-        self.responsable_cierre = responsable_cierre
-        # La hora de cierre la define el reloj del servidor (ya en America/Mexico_City),
-        # no el cliente: evita depender de la hora/zona horaria del navegador.
-        self.fecha_cierre = fecha_cierre or timezone.now()
-        self.full_clean()
-        self.save()
-
-    @property
-    def movimientos(self):
-        return MovimientoTesoreria.objects.filter(corte=self)
+        return f"Apertura {self.fecha:%d/%m/%Y}"
 
     @classmethod
-    def abrir_nuevo_corte(cls, fecha, responsable_apertura, observaciones=''):
-        from django.db import transaction
-
-        if cls.objects.filter(cerrado=False).exists():
-            raise ValidationError('Debe cerrar el corte de caja abierto antes de abrir uno nuevo.')
-
-        if not Divisa.objects.filter(activa=True).exists():
-            raise ValidationError('Debes registrar al menos una divisa activa antes de abrir un corte de caja.')
-
-        if cls.objects.filter(fecha=fecha).exists():
-            raise ValidationError('Ya existe un corte para esa fecha.')
-
-        # ultimo_corte = cls.objects.order_by('-fecha').first()
-        ultimo_corte = cls.objects.first()
-        monedas_previas = {
-            saldo.divisa_id: saldo.saldo_final
-            for saldo in ultimo_corte.saldos.all()
-        } if ultimo_corte else {}
-
-        with transaction.atomic():
-
-            nuevo_corte = cls.objects.create(
-                fecha=fecha,
-                responsable_apertura=responsable_apertura,
-                observaciones=observaciones,
-            )
-
-            divisas = list(Divisa.objects.filter(activa=True))
-            if ultimo_corte:
-                divisas = list({*divisas, *[saldo.divisa for saldo in ultimo_corte.saldos.all()]})
-
-            for divisa in divisas:
-                SaldoCaja.objects.create(
-                    corte=nuevo_corte,
-                    divisa=divisa,
-                    saldo_inicial=monedas_previas.get(divisa.id, Decimal('0')),
-                    saldo_final=monedas_previas.get(divisa.id, Decimal('0')),
-                )
-        return nuevo_corte
-    
-    @classmethod
-    def abierto(cls):
-        return cls.objects.filter(cerrado=False).first()
-
+    def vigente(cls, fecha):
+        """La apertura de la que parte el saldo de `fecha` (None si no hay ninguna)."""
+        return cls.objects.filter(fecha__lte=fecha).order_by('-fecha').first()
 
     @classmethod
-    def ultimo(cls):
-        return cls.objects.first()
+    def primera(cls):
+        return cls.objects.order_by('fecha').first()
 
 
-class SaldoCaja(models.Model):
-    corte = models.ForeignKey(
-        CorteCaja,
-        on_delete=models.CASCADE,
-        related_name="saldos"
-    )
-    divisa = models.ForeignKey(
-        Divisa,
-        on_delete=models.PROTECT
-    )
-    saldo_inicial = models.DecimalField(max_digits=18, decimal_places=2, default=0)
-    saldo_final = models.DecimalField(max_digits=18, decimal_places=2, default=0, db_column='saldo')
-    saldo_fisico = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
-    diferencia = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+class AperturaDivisa(models.Model):
+    apertura = models.ForeignKey(AperturaPeriodo, on_delete=models.CASCADE, related_name='saldos')
+    divisa = models.ForeignKey(Divisa, on_delete=models.PROTECT)
+    monto = models.DecimalField(max_digits=18, decimal_places=2)
 
     class Meta:
-        unique_together = ("corte", "divisa")
+        unique_together = ('apertura', 'divisa')
 
     def __str__(self):
-        return f"SaldoCaja {self.divisa.codigo} - {self.corte.fecha}"
-
-    @property
-    def saldo(self):
-        return self.saldo_final
-
-    def tiene_saldo(self, cantidad):
-        return self.saldo_disponible >= cantidad
-
-    def _movimientos_por_divisa(self):
-        return MovimientoDivisa.objects.filter(
-            movimiento__corte=self.corte,
-            movimiento__cancelado=False,
-            divisa=self.divisa,
-        ).select_related('movimiento')
-
-    @property
-    def ingresos(self):
-        return sum(
-            linea.cantidad for linea in self._movimientos_por_divisa()
-            if linea.movimiento.tipo == MovimientoTesoreria.INGRESO
-        )
-
-    @property
-    def egresos(self):
-        return sum(
-            linea.cantidad for linea in self._movimientos_por_divisa()
-            if linea.movimiento.tipo == MovimientoTesoreria.EGRESO
-        )
-
-    @property
-    def saldo_disponible(self):
-        return self.saldo_inicial + self.ingresos - self.egresos
-
-    def actualizar_balance(self):
-        self.saldo_final = self.saldo_disponible
-        self.save()
-
-    @property
-    def saldo_esperado(self):
-        return self.saldo_disponible
-
-    def registrar_saldo_fisico(self, saldo_fisico):
-        self.saldo_fisico = saldo_fisico
-        self.diferencia = saldo_fisico - self.saldo_esperado
-        self.save()
+        return f"{self.divisa.codigo} {self.monto} ({self.apertura})"
 
 
 class MovimientoTesoreria(models.Model):
@@ -194,14 +87,8 @@ class MovimientoTesoreria(models.Model):
         (EGRESO, "Egreso"),
     )
 
-    corte = models.ForeignKey(
-        CorteCaja,
-        on_delete=models.PROTECT,
-        related_name='movimientos',
-        null=True,
-        blank=True,
-    )
-    fecha = models.DateTimeField()
+    # Día de la hoja física del movimiento (puede ser anterior a la captura).
+    fecha = models.DateField()
     folio = models.CharField(max_length=20, unique=True)
     tipo = models.CharField(max_length=1, choices=TIPO_CHOICES)
 
@@ -218,6 +105,15 @@ class MovimientoTesoreria(models.Model):
     )
 
     editado = models.BooleanField(default=False)
+    # Última edición: siempre el usuario con sesión, nunca un dato del cliente.
+    editado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='movimientos_editados',
+        null=True,
+        blank=True,
+    )
+    editado_en = models.DateTimeField(null=True, blank=True)
 
     cancelado = models.BooleanField(default=False)
     fecha_cancelacion = models.DateTimeField(null=True, blank=True)
@@ -238,10 +134,18 @@ class MovimientoTesoreria(models.Model):
         return f"{self.get_tipo_display()} {self.folio} ({self.fecha})"
 
     def clean(self):
-        if self.corte and self.corte.fecha != self.fecha:
-            raise ValidationError('La fecha del movimiento debe coincidir con la fecha del corte asociado.')
-        if self.corte and self.corte.cerrado:
-            raise ValidationError('No se pueden registrar ni modificar movimientos de un corte cerrado.')
+        if self.fecha:
+            if self.fecha > timezone.localdate():
+                raise ValidationError({'fecha': 'La fecha del movimiento no puede ser futura.'})
+            primera = AperturaPeriodo.primera()
+            if primera is None:
+                raise ValidationError(
+                    'Captura primero los saldos iniciales de caja (Saldos iniciales) antes de registrar movimientos.'
+                )
+            if self.fecha < primera.fecha:
+                raise ValidationError({
+                    'fecha': f'La fecha no puede ser anterior a la primera apertura de caja ({primera.fecha:%d/%m/%Y}).'
+                })
 
         if self.pk:
             lineas = self.divisas.all()
@@ -256,8 +160,6 @@ class MovimientoTesoreria(models.Model):
     def cancelar(self, usuario, motivo):
         if self.cancelado:
             raise ValidationError('Este movimiento ya está cancelado.')
-        if self.corte and self.corte.cerrado:
-            raise ValidationError('No se puede cancelar un movimiento de un corte cerrado.')
         if not motivo or not motivo.strip():
             raise ValidationError('Debes indicar el motivo de la cancelación.')
 
@@ -270,18 +172,6 @@ class MovimientoTesoreria(models.Model):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
-        if self.corte:
-            divisas = {linea.divisa for linea in self.divisas.all()}
-            for divisa in divisas:
-                saldo, _ = SaldoCaja.objects.get_or_create(
-                    corte=self.corte,
-                    divisa=divisa,
-                    defaults={
-                        'saldo_inicial': Decimal('0'),
-                        'saldo_final': Decimal('0'),
-                    }
-                )
-                saldo.actualizar_balance()
 
 
 class ConfiguracionFolio(models.Model):
@@ -339,29 +229,9 @@ class MovimientoDivisa(models.Model):
                 raise ValidationError('Ingresos y egresos deben registrar cantidades positivas.')
 
     def save(self, *args, **kwargs):
+        # Los saldos ya no se guardan: se calculan por fecha (treasury/saldos.py).
         self.full_clean()
         super().save(*args, **kwargs)
-        if self.movimiento and self.movimiento.corte:
-            saldo, _ = SaldoCaja.objects.get_or_create(
-                corte=self.movimiento.corte,
-                divisa=self.divisa,
-                defaults={
-                    'saldo_inicial': Decimal('0'),
-                    'saldo_final': Decimal('0'),
-                }
-            )
-            saldo.actualizar_balance()
-
-    def delete(self, *args, **kwargs):
-        corte = self.movimiento.corte if self.movimiento else None
-        divisa = self.divisa
-        super().delete(*args, **kwargs)
-        if corte:
-            try:
-                saldo = SaldoCaja.objects.get(corte=corte, divisa=divisa)
-            except SaldoCaja.DoesNotExist:
-                return
-            saldo.actualizar_balance()
 
 
 def ruta_adjunto_movimiento(instance, filename):
@@ -393,6 +263,16 @@ class MovimientoArchivo(models.Model):
         related_name='archivos_subidos',
     )
     subido_en = models.DateTimeField(auto_now_add=True)
+    # Borrar un adjunto no lo elimina: queda registrado quién y cuándo lo quitó.
+    eliminado = models.BooleanField(default=False)
+    eliminado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='archivos_movimiento_eliminados',
+        null=True,
+        blank=True,
+    )
+    eliminado_en = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['-subido_en']
@@ -439,13 +319,14 @@ class Denominacion(models.Model):
 
 
 class ArqueoCaja(models.Model):
-    # unique=True: un solo arqueo por corte (el arqueo vive y se cierra junto con su corte).
-    corte = models.ForeignKey(
-        CorteCaja,
-        on_delete=models.PROTECT,
-        related_name='arqueos',
-        unique=True,
-    )
+    """
+    Conteo físico de caja. Se puede hacer en cualquier momento y varias veces
+    al día. El resultado esperado de cada divisa es el saldo calculado al
+    cierre de `fecha` en el momento del arqueo, y se guarda como foto: si
+    después se capturan hojas atrasadas de ese día, el arqueo conserva lo que
+    el sistema decía cuando se contó.
+    """
+    fecha = models.DateField()
     hora_inicio = models.DateTimeField()
     hora_termino = models.DateTimeField()
     usuario = models.ForeignKey(
@@ -453,15 +334,23 @@ class ArqueoCaja(models.Model):
         on_delete=models.PROTECT,
         related_name='arqueos_realizados',
     )
+    editado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='arqueos_editados',
+        null=True,
+        blank=True,
+    )
+    editado_en = models.DateTimeField(null=True, blank=True)
     observaciones = models.TextField(blank=True)
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['-hora_termino']
+        ordering = ['-fecha', '-hora_termino']
 
     def __str__(self):
-        return f"Arqueo #{self.pk} ({self.hora_termino})"
+        return f"Arqueo #{self.pk} ({self.fecha:%d/%m/%Y})"
 
     def clean(self):
         if self.hora_inicio and self.hora_termino and self.hora_termino < self.hora_inicio:
