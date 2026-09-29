@@ -18,6 +18,11 @@ from .alertas_views import listar_alertas_caducidad
 from .auditoria_views import editar_entrada_auditada, listar_ediciones_entrada
 from .existencias_views import listar_existencias
 from .reportes_views import exportar_existencias_excel, exportar_existencias_pdf
+from .reporte_camaras_views import (
+    reporte_existencias_camara,
+    reporte_existencias_camara_excel,
+    reporte_existencias_camara_pdf,
+)
 
 router = DefaultRouter()
 router.register(r'empresas', EmpresaViewSet)
@@ -35,6 +40,9 @@ router.register(r'movimientos-camara', MovimientoCamaraViewSet)
 urlpatterns = [
     path('reportes/existencias/excel/', exportar_existencias_excel),
     path('reportes/existencias/pdf/', exportar_existencias_pdf),
+    path('reportes/existencias-camara/', reporte_existencias_camara),
+    path('reportes/existencias-camara/pdf/', reporte_existencias_camara_pdf),
+    path('reportes/existencias-camara/excel/', reporte_existencias_camara_excel),
     path('existencias/', listar_existencias),
     path('alertas/caducidad/', listar_alertas_caducidad),
     path('auditoria/entradas/', listar_ediciones_entrada),
