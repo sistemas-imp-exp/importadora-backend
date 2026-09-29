@@ -146,6 +146,16 @@ class Entrada(models.Model):
         null=True,
         blank=True,
     )
+    # A qué empresa del grupo pertenece la mercancía (IMPORTADORA, MARISCOS
+    # SELECTOS…). Nullable solo a nivel base de datos: la API la exige en las
+    # entradas capturadas y los traslados la heredan de la entrada de origen.
+    empresa = models.ForeignKey(
+        Empresa,
+        on_delete=models.PROTECT,
+        related_name='entradas',
+        null=True,
+        blank=True,
+    )
     es_internacional = models.BooleanField(default=False)
     factura = models.CharField(max_length=50, blank=True)
     pedimento = models.CharField(max_length=50, blank=True)

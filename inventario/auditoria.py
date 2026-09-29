@@ -42,6 +42,7 @@ CAMPOS_MAYUSCULAS = {'factura', 'pedimento', 'lote_proveedor', 'observaciones'}
 
 CAMPOS_CABECERA_BITACORA = {
     'fecha': 'Fecha',
+    'empresa': 'Empresa',
     'proveedor': 'Proveedor',
     'es_internacional': 'Tipo de entrada',
     'factura': 'Factura',

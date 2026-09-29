@@ -122,6 +122,12 @@ class ProveedorMiniSerializer(serializers.ModelSerializer):
         fields = ['id', 'nombre', 'activo']
 
 
+class EmpresaMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Empresa
+        fields = ['id', 'nombre']
+
+
 class ClienteMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = Cliente
@@ -203,6 +209,13 @@ class EntradaSerializer(serializers.ModelSerializer):
         source='proveedor', queryset=Proveedor.objects.filter(activo=True),
         write_only=True, required=False, allow_null=True,
     )
+    empresa = EmpresaMiniSerializer(read_only=True)
+    # Obligatoria en la API aunque el modelo la permita nula: esa nulidad solo
+    # existe para los traslados entre cámaras, que no pasan por este serializer.
+    empresa_id = serializers.PrimaryKeyRelatedField(
+        source='empresa', queryset=Empresa.objects.all(), write_only=True,
+        error_messages={'required': 'Selecciona la empresa.', 'null': 'Selecciona la empresa.'},
+    )
     detalles = EntradaDetalleNestedSerializer(many=True)
     creado_por = UsuarioCreadorSerializer(read_only=True)
     # No es un campo del modelo Entrada — representa el código de RECIBO INGRESO
@@ -217,8 +230,8 @@ class EntradaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Entrada
         fields = [
-            'id', 'fecha', 'proveedor', 'proveedor_id', 'es_internacional', 'factura', 'pedimento',
-            'detalles', 'recibo_ingreso', 'creado_por', 'editado',
+            'id', 'fecha', 'empresa', 'empresa_id', 'proveedor', 'proveedor_id', 'es_internacional',
+            'factura', 'pedimento', 'detalles', 'recibo_ingreso', 'creado_por', 'editado',
         ]
 
     def get_editado(self, obj) -> bool:
@@ -631,6 +644,9 @@ class MovimientoCamaraCrearSerializer(serializers.Serializer):
 
             entrada_destino = Entrada.objects.create(
                 fecha=fecha, proveedor=None, factura='', pedimento='', creado_por=creado_por,
+                # Trasladar de cámara no cambia de dueño: sin esto el lote movido
+                # desaparecería del filtro por empresa de Existencias.
+                empresa=origen.entrada.empresa,
             )
             entrada_detalle_destino = EntradaDetalle.objects.create(
                 entrada=entrada_destino,

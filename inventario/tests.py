@@ -12,6 +12,7 @@ from security.testing import crear_usuario_con_area
 
 from .alertas import clasificar_nivel, obtener_lotes_por_vencer
 from .models import Camara, Cliente, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral, Salida, SalidaDetalle, MovimientoCamara
+from .testing import empresa_importadora
 
 
 class CatalogosModelTests(TestCase):
@@ -362,6 +363,7 @@ class EntradaApiTests(APITestCase):
             "/api/inventario/entradas/",
             {
                 "fecha": "2026-01-05",
+                "empresa_id": empresa_importadora().id,
                 "proveedor_id": self.proveedor.id,
                 "factura": "FACT 1070",
                 "detalles": [
@@ -391,6 +393,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
     def test_crear_entrada_con_dos_lineas_en_un_solo_post(self):
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "FACT 2001",
             "pedimento": "",
@@ -422,6 +425,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
     def test_crear_entrada_sin_lineas_falla(self):
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "",
             "pedimento": "",
@@ -434,6 +438,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
     def test_entrada_internacional_sin_pedimento_falla(self):
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "es_internacional": True,
             "factura": "FACT 3001",
@@ -457,6 +462,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
     def test_entrada_nacional_sin_pedimento_se_crea(self):
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "es_internacional": False,
             "factura": "FACT 3002",
@@ -479,6 +485,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
     def test_entrada_sin_factura_falla(self):
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "",
             "detalles": [
@@ -500,6 +507,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
     def test_textos_libres_se_normalizan_a_mayusculas(self):
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "fact 3003",
             "detalles": [
@@ -524,6 +532,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
     def test_las_lineas_heredan_el_proveedor_de_la_entrada_como_proveedor_origen(self):
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "FACT 3005",
             "detalles": [
@@ -545,6 +554,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
     def test_recibo_ingreso_registra_al_usuario_logueado_en_el_lote_general(self):
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "FACT 3004",
             "recibo_ingreso": "imp-9999",
@@ -569,6 +579,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         # cajas_disponibles divide entre peso_por_caja: un 0 tumbaría existencias.
         payload = {
             "fecha": "2026-02-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "FACT 3006",
             "detalles": [
@@ -899,3 +910,77 @@ class AlertasCaducidadApiTests(APITestCase):
         self.assertEqual(response.data["total"], 1)
         self.assertEqual(response.data["conteo_por_nivel"]["critico"], 1)
         self.assertEqual(response.data["alertas"][0]["nivel"], "critico")
+
+
+class EmpresaEntradaApiTests(APITestCase):
+    """Cada entrada pertenece a una empresa del grupo (IMPORTADORA, MARISCOS SELECTOS)."""
+
+    def setUp(self):
+        self.client.force_authenticate(user=crear_usuario_con_area("almacen", AREA_INVENTARIO))
+        self.importadora = empresa_importadora()
+        self.selectos = Empresa.objects.get(nombre="MARISCOS SELECTOS")
+        self.proveedor = Proveedor.objects.create(nombre="ACUAMAYA")
+        self.camara = Camara.objects.create(nombre="IMPORTADORA", tipo=Camara.TIPO_PROPIA)
+        self.camara_destino = Camara.objects.create(nombre="MEXIDELI", tipo=Camara.TIPO_TERCERO)
+        self.producto = Producto.objects.create(talla="41-50", tipo="FREEZADO")
+
+    def _crear(self, empresa_id, factura):
+        payload = {
+            "fecha": "2026-09-01",
+            "proveedor_id": self.proveedor.id,
+            "factura": factura,
+            "detalles": [{
+                "producto_id": self.producto.id, "lote_proveedor": f"L-{factura}",
+                "camara": self.camara.id, "cajas": 10, "peso_por_caja": "20.00", "total_kilos": "200.00",
+            }],
+        }
+        if empresa_id is not None:
+            payload["empresa_id"] = empresa_id
+        return self.client.post("/api/inventario/entradas/", payload, format="json")
+
+    def test_la_empresa_es_obligatoria(self):
+        response = self._crear(None, "F-SIN")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("empresa_id", response.data)
+
+    def test_la_entrada_devuelve_su_empresa_y_se_filtra_por_ella(self):
+        creada = self._crear(self.selectos.id, "F-SEL")
+        self._crear(self.importadora.id, "F-IMP")
+
+        self.assertEqual(creada.status_code, 201, creada.data)
+        self.assertEqual(creada.data["empresa"]["nombre"], "MARISCOS SELECTOS")
+        listado = self.client.get(f"/api/inventario/entradas/?empresa={self.selectos.id}")
+        self.assertEqual([e["factura"] for e in listado.data["results"]], ["F-SEL"])
+
+    def test_existencias_y_traslados_respetan_la_empresa(self):
+        self._crear(self.importadora.id, "F-IMP")
+        entrada_sel = self._crear(self.selectos.id, "F-SEL").data
+        lote_sel = entrada_sel["detalles"][0]["id"]
+        # Mover parte del lote de Selectos a otra cámara no debe cambiarlo de dueño.
+        movimiento = self.client.post("/api/inventario/movimientos-camara/", {
+            "entrada_detalle_origen": lote_sel, "camara_destino": self.camara_destino.id,
+            "fecha": "2026-09-02", "cajas": 4, "total_kilos": "80.00",
+        }, format="json")
+        self.assertEqual(movimiento.status_code, 201, movimiento.data)
+
+        existencias = self.client.get(f"/api/inventario/existencias/?empresa={self.selectos.id}").data
+        self.assertEqual(
+            sorted((e["detalle_id"], e["camara_nombre"]) for e in existencias),
+            sorted([(lote_sel, "IMPORTADORA"), (movimiento.data["entrada_detalle_destino"], "MEXIDELI")]),
+        )
+        excel = self.client.get(f"/api/inventario/reportes/existencias/excel/?modo=lote&empresa={self.selectos.id}")
+        self.assertEqual(excel.status_code, 200)
+
+
+class EntradaEmpresaMigracionTests(TestCase):
+    def test_asigna_importadora_a_las_entradas_existentes(self):
+        from django.apps import apps
+        migracion = importlib.import_module("inventario.migrations.0019_entrada_empresa")
+        entrada = Entrada.objects.create(fecha="2026-01-05", factura="VIEJA")
+
+        migracion.crear_empresas_y_asignar(apps, None)
+
+        entrada.refresh_from_db()
+        self.assertEqual(entrada.empresa.nombre, "IMPORTADORA")
+        self.assertEqual(Empresa.objects.filter(nombre__in=["IMPORTADORA", "MARISCOS SELECTOS"]).count(), 2)

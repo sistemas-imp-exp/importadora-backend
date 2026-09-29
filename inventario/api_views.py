@@ -90,7 +90,7 @@ class EntradaViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaInventario]
     queryset = (
         Entrada.objects
-        .select_related('proveedor__creado_por', 'creado_por')
+        .select_related('proveedor__creado_por', 'creado_por', 'empresa')
         .prefetch_related(
             # Los detalles se traen con su consumo ya anotado y sus relaciones
             # resueltas: es lo que evita las miles de consultas por lote.
@@ -126,6 +126,9 @@ class EntradaViewSet(viewsets.ModelViewSet):
         hasta = params.get('hasta')
         if hasta:
             queryset = queryset.filter(fecha__lte=hasta)
+        empresa = params.get('empresa')
+        if empresa:
+            queryset = queryset.filter(empresa_id=empresa)
 
         return queryset
 

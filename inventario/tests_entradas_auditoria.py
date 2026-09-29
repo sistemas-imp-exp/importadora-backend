@@ -14,6 +14,7 @@ from .models import (
     Camara,
     Cliente,
     EdicionEntrada,
+    Empresa,
     Entrada,
     EntradaDetalle,
     Producto,
@@ -21,6 +22,7 @@ from .models import (
     Salida,
     SalidaDetalle,
 )
+from .testing import empresa_importadora
 
 
 class EntradaBloqueoConSalidasApiTests(APITestCase):
@@ -35,7 +37,7 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
         self.producto = Producto.objects.create(talla="21-25", tipo="FREEZADO")
 
         self.entrada = Entrada.objects.create(
-            fecha="2026-03-01", proveedor=self.proveedor, factura="FACT-BLOQ"
+            fecha="2026-03-01", proveedor=self.proveedor, factura="FACT-BLOQ", empresa=empresa_importadora(),
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-BLOQ",
@@ -47,6 +49,7 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
     def _payload(self, **cambios):
         payload = {
             "fecha": "2026-03-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "FACT-BLOQ",
             "pedimento": "",
@@ -157,7 +160,7 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
         self.otro_producto = Producto.objects.create(talla="31-35", tipo="MARQUETA")
 
         self.entrada = Entrada.objects.create(
-            fecha="2026-04-01", proveedor=self.proveedor, factura="FACT-BIT"
+            fecha="2026-04-01", proveedor=self.proveedor, factura="FACT-BIT", empresa=empresa_importadora(),
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-BIT",
@@ -182,6 +185,7 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
     def _put(self, detalles, **cabecera):
         payload = {
             "fecha": "2026-04-01",
+            "empresa_id": empresa_importadora().id,
             "proveedor_id": self.proveedor.id,
             "factura": "FACT-BIT",
             "pedimento": "",
@@ -199,6 +203,15 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
         self.assertEqual(registro.valor_nuevo, "FACT-CORREGIDA")
         self.assertEqual(registro.editado_por, self.user)
         self.assertIsNotNone(registro.editado_en)
+
+    def test_cambio_de_empresa_queda_registrado_por_nombre(self):
+        selectos = Empresa.objects.get(nombre="MARISCOS SELECTOS")
+        response = self._put([self._linea()], empresa_id=selectos.id)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        registro = EdicionEntrada.objects.get(campo="empresa")
+        self.assertEqual(registro.valor_anterior, "IMPORTADORA")
+        self.assertEqual(registro.valor_nuevo, "MARISCOS SELECTOS")
 
     def test_cambio_de_linea_registra_valores_legibles_no_ids(self):
         response = self._put([self._linea(producto_id=self.otro_producto.id, cajas=25)])
@@ -288,7 +301,7 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
         self.producto = Producto.objects.create(talla="36-40", tipo="FREEZADO")
 
         self.entrada = Entrada.objects.create(
-            fecha="2026-05-01", proveedor=self.proveedor, factura="FACT-AUD"
+            fecha="2026-05-01", proveedor=self.proveedor, factura="FACT-AUD", empresa=empresa_importadora(),
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-AUD",

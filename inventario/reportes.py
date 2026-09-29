@@ -15,7 +15,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .caducidad import SIN_CADUCIDAD, rango_de_nivel
-from .models import Camara, EntradaDetalle
+from .models import Camara, Empresa, EntradaDetalle
 
 COLOR_ENCABEZADO = "0E6B6F"
 COLOR_ENCABEZADO_RL = colors.HexColor(f"#{COLOR_ENCABEZADO}")
@@ -88,6 +88,12 @@ def obtener_lotes_filtrados(params, ids_extra=None):
     if camara_id:
         lotes = lotes.filter(camara_id=camara_id)
 
+    # La empresa es de la entrada propia del lote; los traslados entre cámaras
+    # la heredan del origen al crearse (ver MovimientoCamaraSerializer.create).
+    empresa_id = params.get('empresa')
+    if empresa_id:
+        lotes = lotes.filter(entrada__empresa_id=empresa_id)
+
     proveedor = (params.get('proveedor') or '').strip()
     if proveedor:
         # La pantalla muestra "—" en los lotes sin proveedor de origen.
@@ -142,6 +148,11 @@ def describir_filtros(params):
     if camara_id:
         camara = Camara.objects.filter(pk=camara_id).first()
         partes.append(f"Cámara: {camara.nombre}" if camara else f"Cámara #{camara_id}")
+
+    empresa_id = params.get('empresa')
+    if empresa_id:
+        empresa = Empresa.objects.filter(pk=empresa_id).first()
+        partes.append(f"Empresa: {empresa.nombre}" if empresa else f"Empresa #{empresa_id}")
 
     for clave, etiqueta in (('proveedor', 'Proveedor'), ('talla', 'Talla'), ('tipo', 'Tipo')):
         valor = (params.get(clave) or '').strip()
@@ -229,8 +240,8 @@ def construir_libro_excel_lote(lotes):
     ws = wb.active
     ws.title = "Existencias por lote"
     encabezados = [
-        "Cámara", "Proveedor", "Talla", "Tipo", "Lote proveedor", "Recibo ingreso",
-        "Cajas disponibles", "Kilos disponibles", "Costo/kg",
+        "Cámara", "Proveedor", "Talla", "Tipo", "Recibo ingreso",
+        "Cajas disponibles", "Kilos disponibles", "Costo/kg", "Lote proveedor",
     ]
     ws.append(encabezados)
     _estilizar_encabezado(ws, len(encabezados))
@@ -241,17 +252,17 @@ def construir_libro_excel_lote(lotes):
             lote.proveedor_origen.nombre if lote.proveedor_origen_id else "—",
             lote.producto.talla,
             lote.producto.tipo,
-            lote.lote_proveedor,
             lote.lote_general.codigo if lote.lote_general_id else "—",
             lote.cajas_disp,
             float(lote.kilos_disp),
             float(lote.costo_por_kilo) if lote.costo_por_kilo is not None else None,
+            lote.lote_proveedor,
         ])
         fila = ws.max_row
+        ws.cell(row=fila, column=7).number_format = "#,##0.00"
         ws.cell(row=fila, column=8).number_format = "#,##0.00"
-        ws.cell(row=fila, column=9).number_format = "#,##0.00"
 
-    anchos = {"A": 20, "B": 20, "C": 12, "D": 14, "E": 16, "F": 16, "G": 16, "H": 16, "I": 12}
+    anchos = {"A": 20, "B": 20, "C": 12, "D": 14, "E": 16, "F": 16, "G": 16, "H": 12, "I": 18}
     for col, ancho in anchos.items():
         ws.column_dimensions[col].width = ancho
     ws.freeze_panes = "A2"
@@ -361,7 +372,7 @@ def construir_pdf_existencias_lote(lotes, filtros_descripcion):
     buffer, documento = _documento_base("Reporte de existencias por lote")
     elementos = _encabezado_documento("Existencias por lote", filtros_descripcion)
 
-    encabezados = ["Cámara", "Proveedor", "Talla", "Tipo", "Lote", "Recibo", "Cajas disp.", "Kilos disp.", "Costo/kg"]
+    encabezados = ["Cámara", "Proveedor", "Talla", "Tipo", "Recibo", "Cajas disp.", "Kilos disp.", "Costo/kg", "Lote"]
     filas_tabla = [encabezados]
     for lote in lotes:
         filas_tabla.append([
@@ -369,17 +380,17 @@ def construir_pdf_existencias_lote(lotes, filtros_descripcion):
             _celda(lote.proveedor_origen.nombre if lote.proveedor_origen_id else "—"),
             _celda(lote.producto.talla, TA_CENTER),
             _celda(lote.producto.tipo, TA_CENTER),
-            _celda(lote.lote_proveedor),
             _celda(lote.lote_general.codigo if lote.lote_general_id else "—", TA_CENTER),
             _celda(f"{lote.cajas_disp:,}", TA_RIGHT),
             _celda(f"{lote.kilos_disp:,.2f}", TA_RIGHT),
             _celda(f"{lote.costo_por_kilo:,.2f}" if lote.costo_por_kilo is not None else "—", TA_RIGHT),
+            _celda(lote.lote_proveedor),
         ])
 
     if len(filas_tabla) == 1:
         elementos.append(Paragraph("No hay existencias para los filtros seleccionados.", ESTILOS["Normal"]))
     else:
-        anchos = [3 * cm, 3.6 * cm, 2 * cm, 2.4 * cm, 3 * cm, 2.6 * cm, 2.6 * cm, 2.6 * cm, 2.2 * cm]
+        anchos = [3 * cm, 3.6 * cm, 2 * cm, 2.4 * cm, 2.6 * cm, 2.6 * cm, 2.6 * cm, 2.2 * cm, 3 * cm]
         tabla = Table(filas_tabla, colWidths=anchos, repeatRows=1)
         tabla.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), COLOR_ENCABEZADO_RL),
