@@ -18,24 +18,32 @@ class Command(BaseCommand):
             action="store_true",
             help="Omite la confirmación interactiva.",
         )
+        parser.add_argument(
+            "--conservar-nominas",
+            action="store_true",
+            help="No toca las nóminas semanales (solo limpia caja: movimientos, aperturas, arqueos y folios).",
+        )
 
     def handle(self, *args, **options):
         if not options["yes"] and not self.confirmar():
             self.stdout.write("Cancelado.")
             return
 
+        conservar_nominas = options["conservar_nominas"]
         conteos = {
             "arqueos": ArqueoCaja.objects.count(),
             "movimientos": MovimientoTesoreria.objects.count(),
             "aperturas": AperturaPeriodo.objects.count(),
-            "nóminas semanales": NominaSemanal.objects.count(),
         }
+        if not conservar_nominas:
+            conteos["nóminas semanales"] = NominaSemanal.objects.count()
 
         with transaction.atomic():
             ArqueoCaja.objects.all().delete()
             MovimientoTesoreria.objects.all().delete()
             AperturaPeriodo.objects.all().delete()
-            NominaSemanal.objects.all().delete()
+            if not conservar_nominas:
+                NominaSemanal.objects.all().delete()
             ConfiguracionFolio.objects.all().delete()
 
         resumen = ", ".join(f"{n} {nombre}" for nombre, n in conteos.items())
