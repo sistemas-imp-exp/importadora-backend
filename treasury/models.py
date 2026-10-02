@@ -18,64 +18,23 @@ class Divisa(models.Model):
     def __str__(self):
         return self.codigo
 
-class AperturaPeriodo(models.Model):
-    """
-    Saldo inicial de caja a una fecha (por lo general el primer día de un mes).
 
-    Reemplaza al corte de caja abierto/cerrado: el saldo de cualquier día se
-    calcula a partir de la apertura más reciente anterior o igual a ese día,
-    más los ingresos y menos los egresos de las fechas posteriores (ver
-    treasury/saldos.py). Así los movimientos capturados con fecha atrasada
-    —las hojas físicas que no se alcanzan a pasar al día— corrigen solos los
-    saldos de los días siguientes. Una apertura nueva a mitad de periodo
-    reajusta el saldo a partir de su fecha (p. ej. tras un conteo físico).
-
-    Los montos cuentan como saldo al INICIO de su fecha: los movimientos de
-    ese mismo día se suman encima.
+class SaldoInicial(models.Model):
     """
-    fecha = models.DateField(unique=True)
-    observaciones = models.TextField(blank=True)
-    creado_por = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name='aperturas_registradas',
-    )
+    Saldo de caja de una divisa antes de cualquier movimiento, sin fecha: se
+    suma a todo cálculo de saldos (treasury/saldos.py). Solo lo fija el superusuario.
+    """
+    divisa = models.OneToOneField(Divisa, on_delete=models.PROTECT, related_name='saldo_inicial')
+    monto = models.DecimalField(max_digits=18, decimal_places=2)
     editado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
-        related_name='aperturas_editadas',
-        null=True,
-        blank=True,
+        related_name='saldos_iniciales_editados',
     )
-    creado = models.DateTimeField(auto_now_add=True)
-    modificado = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['-fecha']
+    editado_en = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Apertura {self.fecha:%d/%m/%Y}"
-
-    @classmethod
-    def vigente(cls, fecha):
-        """La apertura de la que parte el saldo de `fecha` (None si no hay ninguna)."""
-        return cls.objects.filter(fecha__lte=fecha).order_by('-fecha').first()
-
-    @classmethod
-    def primera(cls):
-        return cls.objects.order_by('fecha').first()
-
-
-class AperturaDivisa(models.Model):
-    apertura = models.ForeignKey(AperturaPeriodo, on_delete=models.CASCADE, related_name='saldos')
-    divisa = models.ForeignKey(Divisa, on_delete=models.PROTECT)
-    monto = models.DecimalField(max_digits=18, decimal_places=2)
-
-    class Meta:
-        unique_together = ('apertura', 'divisa')
-
-    def __str__(self):
-        return f"{self.divisa.codigo} {self.monto} ({self.apertura})"
+        return f"Saldo inicial {self.divisa.codigo} {self.monto}"
 
 
 class MovimientoTesoreria(models.Model):
@@ -134,18 +93,8 @@ class MovimientoTesoreria(models.Model):
         return f"{self.get_tipo_display()} {self.folio} ({self.fecha})"
 
     def clean(self):
-        if self.fecha:
-            if self.fecha > timezone.localdate():
-                raise ValidationError({'fecha': 'La fecha del movimiento no puede ser futura.'})
-            primera = AperturaPeriodo.primera()
-            if primera is None:
-                raise ValidationError(
-                    'Captura primero los saldos iniciales de caja (Saldos iniciales) antes de registrar movimientos.'
-                )
-            if self.fecha < primera.fecha:
-                raise ValidationError({
-                    'fecha': f'La fecha no puede ser anterior a la primera apertura de caja ({primera.fecha:%d/%m/%Y}).'
-                })
+        if self.fecha and self.fecha > timezone.localdate():
+            raise ValidationError({'fecha': 'La fecha del movimiento no puede ser futura.'})
 
         if self.pk:
             lineas = self.divisas.all()

@@ -10,8 +10,6 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from .models import (
-    AperturaDivisa,
-    AperturaPeriodo,
     Denominacion,
     Divisa,
     Empleado,
@@ -33,14 +31,6 @@ User = get_user_model()
 HOY = timezone.localdate()
 
 
-def crear_apertura(fecha, usuario, **montos):
-    """crear_apertura(fecha, usuario, MXN=Decimal('1000'), USD=...)."""
-    apertura = AperturaPeriodo.objects.create(fecha=fecha, creado_por=usuario)
-    for codigo, monto in montos.items():
-        AperturaDivisa.objects.create(apertura=apertura, divisa=Divisa.objects.get(codigo=codigo), monto=Decimal(monto))
-    return apertura
-
-
 def crear_movimiento(fecha, tipo, divisa, cantidad, usuario, folio, cancelado=False):
     movimiento = MovimientoTesoreria.objects.create(
         fecha=fecha, folio=folio, tipo=tipo, autorizo='Jefe', beneficiario='B', concepto='C', usuario=usuario,
@@ -52,13 +42,13 @@ def crear_movimiento(fecha, tipo, divisa, cantidad, usuario, folio, cancelado=Fa
 
 
 class SaldosPorFechaTests(TestCase):
-    """El saldo de un día se calcula: apertura vigente + ingresos - egresos hasta ese día."""
+    """El saldo de un día se calcula: todos los ingresos - egresos hasta ese día, desde siempre."""
 
     def setUp(self):
         self.usuario = User.objects.create_user(username='cajero', password='x')
         self.mxn = Divisa.objects.create(codigo='MXN', nombre='Peso', simbolo='$')
         self.d1 = HOY - timedelta(days=10)
-        crear_apertura(self.d1, self.usuario, MXN='1000')
+        crear_movimiento(self.d1, 'I', self.mxn, '1000', self.usuario, 'SI-1')  # saldo inicial
 
     def test_movimiento_con_fecha_atrasada_recalcula_los_dias_siguientes(self):
         crear_movimiento(self.d1 + timedelta(days=5), 'E', self.mxn, '300', self.usuario, 'E-1')
@@ -74,14 +64,14 @@ class SaldosPorFechaTests(TestCase):
         crear_movimiento(self.d1, 'I', self.mxn, '999', self.usuario, 'I-1', cancelado=True)
         self.assertEqual(saldos_al(HOY)[self.mxn.id], Decimal('1000'))
 
-    def test_una_apertura_a_mitad_de_periodo_reajusta_desde_su_fecha(self):
-        crear_movimiento(self.d1 + timedelta(days=1), 'I', self.mxn, '400', self.usuario, 'I-1')
-        reajuste = self.d1 + timedelta(days=3)
-        crear_apertura(reajuste, self.usuario, MXN='2000')  # conteo físico
-        crear_movimiento(reajuste, 'E', self.mxn, '100', self.usuario, 'E-1')
+    def test_un_movimiento_muy_antiguo_cuenta_en_todos_los_saldos_posteriores(self):
+        antiguo = HOY - timedelta(days=400)
+        crear_movimiento(antiguo, 'I', self.mxn, '500', self.usuario, 'I-1')
 
-        self.assertEqual(saldos_al(reajuste - timedelta(days=1))[self.mxn.id], Decimal('1400'))
-        self.assertEqual(saldos_al(reajuste)[self.mxn.id], Decimal('1900'))
+        self.assertEqual(saldos_al(antiguo - timedelta(days=1)), {})
+        self.assertEqual(saldos_al(HOY)[self.mxn.id], Decimal('1500'))
+        dias = {d['fecha']: d for d in historial(self.d1, HOY)}
+        self.assertEqual(dias[self.d1]['saldos'][self.mxn.id], Decimal('1500'))
 
     def test_resumen_del_dia_parte_del_cierre_del_dia_anterior(self):
         dia = self.d1 + timedelta(days=4)
@@ -89,13 +79,12 @@ class SaldosPorFechaTests(TestCase):
         crear_movimiento(dia, 'I', self.mxn, '50', self.usuario, 'I-1')
         crear_movimiento(dia, 'E', self.mxn, '20', self.usuario, 'E-1')
 
-        apertura, filas = resumen_dia(dia)
-        fila = filas[0]
-        self.assertEqual(apertura.fecha, self.d1)
+        fila = resumen_dia(dia)[0]
         self.assertEqual((fila['saldo_inicial'], fila['ingresos'], fila['egresos'], fila['saldo_final']),
                          (Decimal('1100'), Decimal('50'), Decimal('20'), Decimal('1130')))
-        # El día de la apertura, el saldo inicial son los montos de la apertura.
-        self.assertEqual(resumen_dia(self.d1)[1][0]['saldo_inicial'], Decimal('1000'))
+        # El primer día con movimientos parte de cero.
+        primer_dia = resumen_dia(self.d1)[0]
+        self.assertEqual((primer_dia['saldo_inicial'], primer_dia['ingresos']), (Decimal('0'), Decimal('1100')))
 
     def test_historial_marca_los_dias_en_negativo_sin_bloquear(self):
         crear_movimiento(self.d1 + timedelta(days=1), 'E', self.mxn, '1500', self.usuario, 'E-1')
@@ -107,17 +96,59 @@ class SaldosPorFechaTests(TestCase):
         self.assertEqual(dias[self.d1 + timedelta(days=1)]['saldos'][self.mxn.id], Decimal('-500'))
         self.assertFalse(dias[self.d1 + timedelta(days=2)]['negativo'])
 
-    def test_sin_apertura_no_hay_saldos_ni_movimientos(self):
-        AperturaPeriodo.objects.all().delete()
+    def test_sin_movimientos_no_hay_saldos(self):
+        MovimientoTesoreria.objects.all().delete()
         self.assertEqual(saldos_al(HOY), {})
-        with self.assertRaises(ValidationError):
-            crear_movimiento(HOY, 'I', self.mxn, '1', self.usuario, 'X')
 
-    def test_no_se_aceptan_fechas_futuras_ni_anteriores_a_la_primera_apertura(self):
+    def test_no_se_aceptan_fechas_futuras(self):
         with self.assertRaises(ValidationError):
             crear_movimiento(HOY + timedelta(days=1), 'I', self.mxn, '1', self.usuario, 'F')
-        with self.assertRaises(ValidationError):
-            crear_movimiento(self.d1 - timedelta(days=1), 'I', self.mxn, '1', self.usuario, 'A')
+
+
+class SaldoInicialTests(APITestCase):
+    """El saldo inicial (sin fecha) se suma a todo saldo calculado; solo el superusuario lo modifica."""
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser(username='admin', password='x')
+        self.cajero = crear_usuario_con_area('cajero', AREA_TESORERIA)
+        self.mxn = Divisa.objects.create(codigo='MXN', nombre='Peso', simbolo='$')
+        self.usd = Divisa.objects.create(codigo='USD', nombre='Dólar', simbolo='$')
+
+    def _guardar(self, usuario, saldos):
+        self.client.force_authenticate(user=usuario)
+        return self.client.post('/api/treasury/saldos-iniciales/', {'saldos': saldos}, format='json')
+
+    def test_el_superusuario_lo_guarda_y_se_suma_a_todos_los_saldos(self):
+        crear_movimiento(HOY - timedelta(days=900), 'E', self.mxn, '200', self.cajero, 'E-1')
+        respuesta = self._guardar(self.admin, [{'divisa_id': self.mxn.id, 'monto': '1000.00'}])
+
+        self.assertEqual(respuesta.status_code, 200, respuesta.data)
+        mxn = next(f for f in respuesta.data if f['divisa']['codigo'] == 'MXN')
+        self.assertEqual((mxn['monto'], mxn['editado_por']['username']), ('1000.00', 'admin'))
+        self.assertEqual(saldos_al(HOY - timedelta(days=1000))[self.mxn.id], Decimal('1000'))
+        self.assertEqual(saldos_al(HOY)[self.mxn.id], Decimal('800'))
+        self.assertEqual(resumen_dia(HOY - timedelta(days=900))[0]['saldo_inicial'], Decimal('1000'))
+
+    def test_volver_a_guardar_actualiza_el_monto(self):
+        self._guardar(self.admin, [{'divisa_id': self.mxn.id, 'monto': '1000.00'}])
+        self._guardar(self.admin, [{'divisa_id': self.mxn.id, 'monto': '1500.00'}])
+        self.assertEqual(saldos_al(HOY)[self.mxn.id], Decimal('1500'))
+
+    def test_tesoreria_lo_consulta_pero_no_lo_modifica(self):
+        self.client.force_authenticate(user=self.cajero)
+        listado = self.client.get('/api/treasury/saldos-iniciales/')
+        self.assertEqual(listado.status_code, 200)
+        self.assertEqual([f['monto'] for f in listado.data], ['0.00', '0.00'])
+
+        respuesta = self._guardar(self.cajero, [{'divisa_id': self.mxn.id, 'monto': '1.00'}])
+        self.assertEqual(respuesta.status_code, 403)
+
+    def test_rechaza_montos_negativos_y_divisas_repetidas(self):
+        negativo = self._guardar(self.admin, [{'divisa_id': self.mxn.id, 'monto': '-1.00'}])
+        repetida = self._guardar(self.admin, [
+            {'divisa_id': self.mxn.id, 'monto': '1.00'}, {'divisa_id': self.mxn.id, 'monto': '2.00'},
+        ])
+        self.assertEqual((negativo.status_code, repetida.status_code), (400, 400))
 
 
 class CustomExceptionHandlerTests(TestCase):
@@ -140,8 +171,6 @@ class MovimientoTesoreriaApiTests(APITestCase):
         self.usuario = crear_usuario_con_area('cajero', AREA_TESORERIA, password='clave12345')
         self.client.force_authenticate(user=self.usuario)
         self.mxn = Divisa.objects.create(codigo='MXN', nombre='Peso mexicano', simbolo='$')
-        self.inicio = HOY - timedelta(days=30)
-        crear_apertura(self.inicio, self.usuario, MXN='0')
 
     def _payload(self, folio='001', tipo='I', cantidad='100.00', fecha=None, **extra):
         return {
@@ -172,11 +201,10 @@ class MovimientoTesoreriaApiTests(APITestCase):
         self._crear_movimiento(tipo='E', cantidad='500.00')
         self.assertEqual(saldos_al(HOY)[self.mxn.id], Decimal('-500.00'))
 
-    def test_fecha_futura_o_anterior_a_la_apertura_se_rechaza(self):
+    def test_fecha_futura_se_rechaza_y_una_antigua_se_acepta(self):
         futura = self.client.post('/api/treasury/movimientos/', self._payload(fecha=HOY + timedelta(days=1)), format='json')
-        antes = self.client.post('/api/treasury/movimientos/', self._payload(folio='002', fecha=self.inicio - timedelta(days=1)), format='json')
         self.assertEqual(futura.status_code, 400)
-        self.assertEqual(antes.status_code, 400)
+        self._crear_movimiento(folio='002', fecha=HOY - timedelta(days=800))
 
     def test_editar_registra_quien_y_cuando_y_recalcula_el_saldo(self):
         movimiento = self._crear_movimiento(cantidad='100.00')
@@ -210,7 +238,7 @@ class MovimientoTesoreriaApiTests(APITestCase):
         self.assertEqual(respuesta.status_code, 200, respuesta.data)
         self.assertTrue(respuesta.data['cancelado'])
         self.assertEqual(respuesta.data['usuario_cancelacion']['username'], 'cajero')
-        self.assertEqual(saldos_al(HOY)[self.mxn.id], Decimal('0.00'))
+        self.assertEqual(saldos_al(HOY).get(self.mxn.id, Decimal('0')), Decimal('0.00'))
 
     def test_folio_duplicado_da_mensaje_amigable(self):
         self._crear_movimiento(folio='DUP-1')
@@ -240,7 +268,7 @@ class MovimientoTesoreriaApiTests(APITestCase):
         self.assertEqual(respuesta.status_code, 400)
 
 
-class AperturaYCajaDiariaApiTests(APITestCase):
+class CajaDiariaApiTests(APITestCase):
     def setUp(self):
         self.usuario = crear_usuario_con_area('cajero', AREA_TESORERIA)
         self.client.force_authenticate(user=self.usuario)
@@ -248,26 +276,8 @@ class AperturaYCajaDiariaApiTests(APITestCase):
         self.usd = Divisa.objects.create(codigo='USD', nombre='Dólar', simbolo='$')
         self.inicio = HOY - timedelta(days=5)
 
-    def _crear_apertura(self, fecha, **extra):
-        return self.client.post('/api/treasury/aperturas/', {
-            'fecha': fecha.isoformat(),
-            'saldos': [{'divisa_id': self.mxn.id, 'monto': '1000.00'}, {'divisa_id': self.usd.id, 'monto': '50.00'}],
-            **extra,
-        }, format='json')
-
-    def test_crea_apertura_a_nombre_del_usuario_de_la_sesion(self):
-        respuesta = self._crear_apertura(self.inicio)
-        self.assertEqual(respuesta.status_code, 201, respuesta.data)
-        self.assertEqual(respuesta.data['creado_por']['username'], 'cajero')
-        self.assertEqual(len(respuesta.data['saldos']), 2)
-
-    def test_apertura_duplicada_o_futura_se_rechaza(self):
-        self._crear_apertura(self.inicio)
-        self.assertEqual(self._crear_apertura(self.inicio).status_code, 400)
-        self.assertEqual(self._crear_apertura(HOY + timedelta(days=1)).status_code, 400)
-
     def test_caja_del_dia_devuelve_saldos_y_movimientos(self):
-        self._crear_apertura(self.inicio)
+        crear_movimiento(self.inicio, 'I', self.mxn, '1000', self.usuario, 'SI-1')
         crear_movimiento(self.inicio + timedelta(days=1), 'I', self.mxn, '200', self.usuario, 'I-1')
         crear_movimiento(HOY, 'E', self.mxn, '1500', self.usuario, 'E-1')
 
@@ -281,7 +291,7 @@ class AperturaYCajaDiariaApiTests(APITestCase):
         self.assertEqual([m['folio'] for m in respuesta.data['movimientos']], ['E-1'])
 
     def test_historial_lista_los_dias_con_actividad_del_mas_reciente_al_mas_antiguo(self):
-        self._crear_apertura(self.inicio)
+        crear_movimiento(self.inicio, 'I', self.mxn, '1000', self.usuario, 'SI-1')
         crear_movimiento(self.inicio + timedelta(days=2), 'I', self.mxn, '10', self.usuario, 'I-1')
 
         respuesta = self.client.get('/api/treasury/caja/historial/', {'desde': self.inicio.isoformat()})
@@ -289,13 +299,13 @@ class AperturaYCajaDiariaApiTests(APITestCase):
         self.assertEqual(respuesta.status_code, 200, respuesta.data)
         self.assertEqual([d['fecha'] for d in respuesta.data],
                          [(self.inicio + timedelta(days=2)).isoformat(), self.inicio.isoformat()])
-        self.assertTrue(respuesta.data[1]['apertura'])
+        self.assertEqual(respuesta.data[1]['saldos'][0]['saldo_final'], '1000.00')
 
-    def test_sin_apertura_la_caja_del_dia_viene_vacia(self):
+    def test_sin_movimientos_la_caja_del_dia_viene_en_cero(self):
         respuesta = self.client.get('/api/treasury/caja/dia/')
         self.assertEqual(respuesta.status_code, 200)
-        self.assertIsNone(respuesta.data['apertura'])
-        self.assertEqual(respuesta.data['saldos'], [])
+        self.assertEqual([s['saldo_final'] for s in respuesta.data['saldos']], ['0.00', '0.00'])
+        self.assertEqual(respuesta.data['movimientos'], [])
 
 
 class ReporteMovimientosApiTests(APITestCase):
@@ -310,8 +320,6 @@ class ReporteMovimientosApiTests(APITestCase):
 
         self.dia2 = HOY
         self.dia1 = HOY - timedelta(days=1)
-        crear_apertura(self.dia1, self.usuario, MXN='0', USD='0')
-
         self._crear_movimiento(self.dia1, folio='R-001', tipo='I', divisa=self.mxn, cantidad='1000.00', beneficiario='Cliente Mostrador')
         self._crear_movimiento(self.dia1, folio='R-002', tipo='E', divisa=self.mxn, cantidad='300.00', beneficiario='Proveedor Mariscos del Golfo')
         self._crear_movimiento(self.dia2, folio='R-003', tipo='I', divisa=self.usd, cantidad='200.00', beneficiario='Cliente Mostrador')
@@ -455,7 +463,7 @@ class ArqueoCajaApiTests(APITestCase):
         self.billete_100_usd = Denominacion.objects.create(divisa=self.usd, valor=Decimal('100'), tipo=Denominacion.BILLETE)
 
         self.inicio = HOY - timedelta(days=3)
-        crear_apertura(self.inicio, self.usuario, MXN='1000', USD='0')
+        crear_movimiento(self.inicio, 'I', self.mxn, '1000', self.usuario, 'SI-1')
 
     def _payload_completo(self, piezas_500=2, piezas_10=3, piezas_100_usd=1, fecha=None):
         return {
@@ -523,12 +531,13 @@ class ArqueoCajaApiTests(APITestCase):
 
         self.assertEqual(respuesta.status_code, 400)
 
-    def test_sin_apertura_para_esa_fecha_da_error_amigable(self):
+    def test_arqueo_antes_del_primer_movimiento_espera_cero(self):
         respuesta = self.client.post(
             '/api/treasury/arqueos/', self._payload_completo(fecha=self.inicio - timedelta(days=1)), format='json',
         )
-        self.assertEqual(respuesta.status_code, 400)
-        self.assertIn('Saldos iniciales', str(respuesta.data))
+        self.assertEqual(respuesta.status_code, 201, respuesta.data)
+        linea_mxn = next(d for d in respuesta.data['divisas'] if d['divisa']['codigo'] == 'MXN')
+        self.assertEqual(Decimal(linea_mxn['resultado_esperado']), Decimal('0.00'))
 
     def test_editar_arqueo_recalcula_totales_y_registra_al_editor(self):
         creado = self.client.post('/api/treasury/arqueos/', self._payload_completo(), format='json').data
@@ -552,7 +561,6 @@ class MovimientoArchivoApiTests(APITestCase):
         self.client.force_authenticate(user=self.usuario)
 
         self.mxn = Divisa.objects.create(codigo='MXN', nombre='Peso mexicano', simbolo='$')
-        crear_apertura(HOY, self.usuario, MXN='0')
         self.movimiento_id = crear_movimiento(HOY, 'I', self.mxn, '100', self.usuario, 'ARCH-1').id
 
     def test_sube_un_archivo_valido(self):

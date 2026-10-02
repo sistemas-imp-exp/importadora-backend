@@ -12,7 +12,6 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from security.permissions import AreaTesoreria
 from .models import (
-    AperturaPeriodo,
     ArqueoCaja,
     Banco,
     ConfiguracionFolio,
@@ -24,19 +23,21 @@ from .models import (
     Puesto,
     Rancho,
     MovimientoTesoreria,
+    SaldoInicial,
 )
 from .api_serializers import (
-    AperturaPeriodoSerializer,
     ArqueoCajaSerializer,
     BancoSerializer,
     DenominacionSerializer,
     DivisaSerializer,
     EmpleadoSerializer,
+    GuardarSaldosInicialesSerializer,
     MovimientoArchivoSerializer,
     MovimientoTesoreriaSerializer,
     NominaSemanalSerializer,
     PuestoSerializer,
     RanchoSerializer,
+    UsuarioResponsableSerializer,
 )
 from .saldos import historial, resumen_dia
 
@@ -55,13 +56,6 @@ class DivisaViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaTesoreria]
     queryset = Divisa.objects.all()
     serializer_class = DivisaSerializer
-
-
-class AperturaPeriodoViewSet(viewsets.ModelViewSet):
-    """Saldos iniciales de caja por fecha (reemplazan la apertura/cierre de cortes)."""
-    permission_classes = [AreaTesoreria]
-    queryset = AperturaPeriodo.objects.select_related('creado_por', 'editado_por').prefetch_related('saldos__divisa')
-    serializer_class = AperturaPeriodoSerializer
 
 
 def _fecha_param(request, nombre, por_defecto):
@@ -83,10 +77,46 @@ def _divisa_dict(divisa):
     return {'id': divisa.id, 'codigo': divisa.codigo, 'simbolo': divisa.simbolo, 'nombre': divisa.nombre}
 
 
+class SaldoInicialViewSet(viewsets.ViewSet):
+    """
+    Saldo inicial de caja por divisa (sin fecha), base de todos los saldos
+    calculados. Lo consulta Tesorería; solo el superusuario lo modifica.
+    """
+    permission_classes = [AreaTesoreria]
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [EsSuperusuario()]
+        return super().get_permissions()
+
+    def _listado(self):
+        saldos = {s.divisa_id: s for s in SaldoInicial.objects.select_related('editado_por')}
+        divisas = Divisa.objects.filter(activa=True) | Divisa.objects.filter(id__in=saldos)
+        return [
+            {
+                'divisa': _divisa_dict(divisa),
+                'monto': _dinero(saldos[divisa.id].monto) if divisa.id in saldos else _dinero(0),
+                'editado_por': UsuarioResponsableSerializer(saldos[divisa.id].editado_por).data if divisa.id in saldos else None,
+                'editado_en': saldos[divisa.id].editado_en if divisa.id in saldos else None,
+            }
+            for divisa in divisas.order_by('codigo')
+        ]
+
+    def list(self, request):
+        return Response(self._listado())
+
+    def create(self, request):
+        """Guarda los montos enviados (uno por divisa) y devuelve el listado completo."""
+        serializer = GuardarSaldosInicialesSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(self._listado())
+
+
 class CajaDiariaViewSet(viewsets.ViewSet):
     """
-    Consulta de caja por día (reemplaza al corte abierto/cerrado): saldos
-    calculados a partir de la apertura vigente, ver treasury/saldos.py.
+    Consulta de caja por día: saldos calculados con todos los movimientos
+    hasta ese día, ver treasury/saldos.py.
     """
     permission_classes = [AreaTesoreria]
 
@@ -95,7 +125,7 @@ class CajaDiariaViewSet(viewsets.ViewSet):
         fecha, error = _fecha_param(request, 'fecha', timezone.localdate())
         if error:
             return error
-        apertura, filas = resumen_dia(fecha)
+        filas = resumen_dia(fecha)
         movimientos = (
             MovimientoTesoreria.objects.filter(fecha=fecha)
             .select_related('usuario', 'editado_por', 'usuario_cancelacion')
@@ -104,7 +134,6 @@ class CajaDiariaViewSet(viewsets.ViewSet):
         )
         return Response({
             'fecha': fecha.isoformat(),
-            'apertura': {'id': apertura.id, 'fecha': apertura.fecha.isoformat()} if apertura else None,
             'saldos': [
                 {
                     'divisa': _divisa_dict(f['divisa']),
@@ -136,7 +165,6 @@ class CajaDiariaViewSet(viewsets.ViewSet):
         return Response([
             {
                 'fecha': d['fecha'].isoformat(),
-                'apertura': d['apertura'],
                 'movimientos': d['movimientos'],
                 'negativo': d['negativo'],
                 'saldos': [

@@ -7,7 +7,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from treasury.models import AperturaDivisa, AperturaPeriodo, Divisa, MovimientoDivisa, MovimientoTesoreria
+from treasury.models import Divisa, MovimientoDivisa, MovimientoTesoreria
 from treasury.saldos import saldos_al
 
 User = get_user_model()
@@ -33,8 +33,8 @@ MOTIVOS_CANCELACION = [
 
 class Command(BaseCommand):
     help = (
-        "Genera datos de prueba de caja: una apertura (saldos iniciales) al inicio del "
-        "periodo si no existe ninguna, y movimientos diarios (ingresos, egresos, ediciones, "
+        "Genera datos de prueba de caja: un ingreso de saldo inicial por divisa al inicio del "
+        "periodo, y movimientos diarios (ingresos, egresos, ediciones, "
         "cancelaciones) en los últimos N días hasta hoy."
     )
 
@@ -55,16 +55,23 @@ class Command(BaseCommand):
 
         hoy = timezone.localdate()
         inicio = hoy - timedelta(days=options["dias"] - 1)
-        primera = AperturaPeriodo.primera()
-        if primera is None or primera.fecha > inicio:
-            apertura = AperturaPeriodo.objects.create(
-                fecha=inicio, creado_por=random.choice(usuarios), observaciones="Apertura de prueba",
-            )
-            for divisa in divisas:
-                AperturaDivisa.objects.create(apertura=apertura, divisa=divisa, monto=Decimal(random.randint(5000, 20000)))
-            self.stdout.write(f"  - Apertura de prueba el {inicio:%d/%m/%Y}")
-
         run_id = timezone.now().strftime("%m%d%H%M%S")
+        for divisa in divisas:
+            with transaction.atomic():
+                movimiento = MovimientoTesoreria.objects.create(
+                    fecha=inicio,
+                    folio=f"SEED-{run_id}-SI{divisa.id}",
+                    tipo=MovimientoTesoreria.INGRESO,
+                    autorizo=random.choice(AUTORIZO_NOMBRES),
+                    beneficiario="Caja",
+                    concepto="Saldo inicial de prueba",
+                    usuario=random.choice(usuarios),
+                )
+                MovimientoDivisa.objects.create(
+                    movimiento=movimiento, divisa=divisa, cantidad=Decimal(random.randint(5000, 20000)),
+                )
+        self.stdout.write(f"  - Saldo inicial de prueba el {inicio:%d/%m/%Y}")
+
         folio_seq = 1
         for i in range(options["dias"]):
             dia = inicio + timedelta(days=i)

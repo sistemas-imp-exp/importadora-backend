@@ -6,8 +6,6 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
-    AperturaDivisa,
-    AperturaPeriodo,
     ArqueoCaja,
     ArqueoConteo,
     ArqueoDivisa,
@@ -23,6 +21,7 @@ from .models import (
     NominaSemanal,
     Puesto,
     Rancho,
+    SaldoInicial,
 )
 from .saldos import resumen_dia
 
@@ -39,6 +38,29 @@ class DivisaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Divisa
         fields = ['id', 'codigo', 'nombre', 'simbolo', 'activa']
+
+
+class SaldoInicialEntradaSerializer(serializers.Serializer):
+    divisa_id = serializers.PrimaryKeyRelatedField(source='divisa', queryset=Divisa.objects.all())
+    monto = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=Decimal('0'))
+
+
+class GuardarSaldosInicialesSerializer(serializers.Serializer):
+    saldos = SaldoInicialEntradaSerializer(many=True)
+
+    def validate_saldos(self, value):
+        ids = [s['divisa'].id for s in value]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError('Cada divisa debe aparecer una sola vez.')
+        return value
+
+    def save(self):
+        usuario = _usuario_sesion(self)
+        with transaction.atomic():
+            for saldo in self.validated_data['saldos']:
+                SaldoInicial.objects.update_or_create(
+                    divisa=saldo['divisa'], defaults={'monto': saldo['monto'], 'editado_por': usuario},
+                )
 
 
 class MovimientoDivisaSerializer(serializers.ModelSerializer):
@@ -167,72 +189,6 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
         return instance
 
 
-class AperturaDivisaSerializer(serializers.ModelSerializer):
-    divisa = DivisaSerializer(read_only=True)
-    divisa_id = serializers.PrimaryKeyRelatedField(source='divisa', queryset=Divisa.objects.all(), write_only=True)
-
-    class Meta:
-        model = AperturaDivisa
-        fields = ['id', 'divisa', 'divisa_id', 'monto']
-
-
-class AperturaPeriodoSerializer(serializers.ModelSerializer):
-    saldos = AperturaDivisaSerializer(many=True)
-    creado_por = UsuarioResponsableSerializer(read_only=True)
-    editado_por = UsuarioResponsableSerializer(read_only=True)
-
-    class Meta:
-        model = AperturaPeriodo
-        fields = ['id', 'fecha', 'observaciones', 'saldos', 'creado_por', 'editado_por', 'creado', 'modificado']
-        read_only_fields = ['id', 'creado_por', 'editado_por', 'creado', 'modificado']
-
-    def validate_fecha(self, value):
-        if value > timezone.localdate():
-            raise serializers.ValidationError('La fecha de la apertura no puede ser futura.')
-        consulta = AperturaPeriodo.objects.filter(fecha=value)
-        if self.instance:
-            consulta = consulta.exclude(pk=self.instance.pk)
-        if consulta.exists():
-            raise serializers.ValidationError('Ya existe una apertura con esa fecha.')
-        return value
-
-    def validate(self, data):
-        saldos = data.get('saldos')
-        if saldos is not None:
-            if not saldos:
-                raise serializers.ValidationError({'saldos': 'Captura el saldo inicial de al menos una divisa.'})
-            ids = [s['divisa'].id for s in saldos]
-            if len(ids) != len(set(ids)):
-                raise serializers.ValidationError({'saldos': 'Cada divisa debe aparecer una sola vez.'})
-            if any(s['monto'] < 0 for s in saldos):
-                raise serializers.ValidationError({'saldos': 'El saldo inicial no puede ser negativo.'})
-        return data
-
-    def _guardar_saldos(self, apertura, saldos):
-        apertura.saldos.all().delete()
-        AperturaDivisa.objects.bulk_create(
-            [AperturaDivisa(apertura=apertura, divisa=s['divisa'], monto=s['monto']) for s in saldos]
-        )
-
-    def create(self, validated_data):
-        saldos = validated_data.pop('saldos')
-        with transaction.atomic():
-            apertura = AperturaPeriodo.objects.create(creado_por=_usuario_sesion(self), **validated_data)
-            self._guardar_saldos(apertura, saldos)
-        return apertura
-
-    def update(self, instance, validated_data):
-        saldos = validated_data.pop('saldos', None)
-        with transaction.atomic():
-            for campo, valor in validated_data.items():
-                setattr(instance, campo, valor)
-            instance.editado_por = _usuario_sesion(self)
-            instance.save()
-            if saldos is not None:
-                self._guardar_saldos(instance, saldos)
-        return instance
-
-
 class DenominacionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Denominacion
@@ -291,10 +247,6 @@ class ArqueoCajaSerializer(serializers.ModelSerializer):
     def validate_fecha(self, value):
         if value > timezone.localdate():
             raise serializers.ValidationError('La fecha del arqueo no puede ser futura.')
-        if AperturaPeriodo.vigente(value) is None:
-            raise serializers.ValidationError(
-                'No hay saldo inicial de caja para esa fecha: captura primero una apertura en Saldos iniciales.'
-            )
         return value
 
     def validate(self, data):
@@ -320,7 +272,7 @@ class ArqueoCajaSerializer(serializers.ModelSerializer):
 
     def _guardar_divisas(self, arqueo, divisas_data):
         # Foto del saldo calculado de ese día en el momento del conteo.
-        _, filas = resumen_dia(arqueo.fecha)
+        filas = resumen_dia(arqueo.fecha)
         esperado = {f['divisa'].id: f for f in filas}
         previas = {linea.divisa_id: linea for linea in arqueo.divisas.all()}
         ids_enviados = set()

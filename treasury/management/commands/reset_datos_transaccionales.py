@@ -1,13 +1,13 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from treasury.models import AperturaPeriodo, ArqueoCaja, ConfiguracionFolio, MovimientoTesoreria, NominaSemanal
+from treasury.models import ArqueoCaja, ConfiguracionFolio, MovimientoTesoreria, NominaSemanal
 
 
 class Command(BaseCommand):
     help = (
         "Borra los datos transaccionales de Tesorería: movimientos (con sus adjuntos), "
-        "saldos iniciales (aperturas), arqueos, nóminas semanales (con sus detalles) y "
+        "arqueos, nóminas semanales (con sus detalles) y "
         "reinicia los folios. No toca catálogos (divisas, denominaciones, bancos, roles, "
         "empleados, ranchos, puestos) ni usuarios."
     )
@@ -21,7 +21,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--conservar-nominas",
             action="store_true",
-            help="No toca las nóminas semanales (solo limpia caja: movimientos, aperturas, arqueos y folios).",
+            help="No toca las nóminas semanales (solo limpia caja: movimientos, arqueos y folios).",
         )
 
     def handle(self, *args, **options):
@@ -33,7 +33,6 @@ class Command(BaseCommand):
         conteos = {
             "arqueos": ArqueoCaja.objects.count(),
             "movimientos": MovimientoTesoreria.objects.count(),
-            "aperturas": AperturaPeriodo.objects.count(),
         }
         if not conservar_nominas:
             conteos["nóminas semanales"] = NominaSemanal.objects.count()
@@ -41,7 +40,6 @@ class Command(BaseCommand):
         with transaction.atomic():
             ArqueoCaja.objects.all().delete()
             MovimientoTesoreria.objects.all().delete()
-            AperturaPeriodo.objects.all().delete()
             if not conservar_nominas:
                 NominaSemanal.objects.all().delete()
             ConfiguracionFolio.objects.all().delete()
@@ -51,7 +49,7 @@ class Command(BaseCommand):
 
     def confirmar(self):
         respuesta = input(
-            "Esto borrará TODOS los movimientos, saldos iniciales, arqueos y nóminas "
+            "Esto borrará TODOS los movimientos, arqueos y nóminas "
             "semanales, y reiniciará los folios. Los catálogos y usuarios no se tocan. "
             "¿Continuar? [s/N]: "
         )

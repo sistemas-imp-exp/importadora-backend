@@ -3,8 +3,7 @@ from treasury.models import *
 
 admin.site.register(Divisa)
 admin.site.register(TipoCambio)
-admin.site.register(AperturaPeriodo)
-admin.site.register(AperturaDivisa)
+admin.site.register(SaldoInicial)
 admin.site.register(MovimientoTesoreria)
 admin.site.register(ConfiguracionFolio)
 admin.site.register(MovimientoDivisa)
