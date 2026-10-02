@@ -14,7 +14,7 @@ o trazabilidad ya consumida por documentos posteriores.
 """
 from django.db import transaction
 
-from .models import EdicionEntrada, Entrada, EntradaDetalle
+from .models import EdicionEntrada, Entrada, EntradaDetalle, LoteGeneral
 
 # campo -> etiqueta legible (la usa el front para nombrar la columna)
 CAMPOS_ENTRADA = {
@@ -65,6 +65,7 @@ CAMPOS_LINEA_BITACORA = {
 ETIQUETAS_BITACORA = {
     **CAMPOS_CABECERA_BITACORA,
     **CAMPOS_LINEA_BITACORA,
+    'recibo_ingreso': 'Recibo ingreso',
     'linea_agregada': 'Línea agregada',
     'linea_eliminada': 'Línea eliminada',
     'entrada_eliminada': 'Entrada eliminada',
@@ -72,6 +73,7 @@ ETIQUETAS_BITACORA = {
 
 MOTIVO_INVENTARIO = 'Edición desde el módulo de Inventario'
 MOTIVO_ELIMINACION = 'Eliminación desde el módulo de Inventario'
+MOTIVO_RECIBO = 'Recibo de ingreso capturado después de la entrada'
 
 
 def referencia_entrada(entrada: Entrada) -> str:
@@ -298,3 +300,83 @@ def registrar_eliminacion(entrada: Entrada, usuario, motivo: str = MOTIVO_ELIMIN
         motivo=motivo,
         editado_por=usuario,
     )
+
+
+def recibos_de(entrada: Entrada) -> str:
+    """Recibos de ingreso (IMP) de la entrada, sin repetir: "IMP-1, IMP-2"."""
+    codigos = [lote.codigo for lote in entrada.lotes_generales.all()]
+    return ', '.join(sorted(set(codigos)))
+
+
+@transaction.atomic
+def editar_recibos(entrada: Entrada, recibos: dict, usuario) -> list:
+    """
+    Asigna el recibo de ingreso (IMP) de cada línea que va a cámara, aunque la
+    entrada ya tenga salidas: el recibo es un dato del documento y no altera
+    cajas, kilos ni costo. Los lotes trasladados lo heredan solos (se lee del
+    lote raíz, ver EntradaDetalle.documento_origen).
+
+    `recibos` es {detalle_id: codigo}; un código vacío deja la línea sin recibo.
+    Las líneas que comparten un código comparten su LoteGeneral, por lo que
+    deben estar en la misma cámara. Deja una fila de bitácora por línea cambiada.
+    """
+    lineas = {d.id: d for d in entrada.detalles.select_related('producto', 'camara', 'lote_general')}
+    nuevos = {}
+    for detalle_id, codigo in recibos.items():
+        linea = lineas.get(int(detalle_id))
+        if linea is None:
+            raise EdicionInvalida(f"La línea {detalle_id} no pertenece a esta entrada.")
+        if not linea.camara_id:
+            raise EdicionInvalida('Solo las líneas que van a cámara llevan recibo de ingreso.')
+        nuevos[linea.id] = (codigo or '').strip().upper()
+
+    camara_por_codigo = {}
+    for detalle_id, codigo in nuevos.items():
+        if not codigo:
+            continue
+        if len(codigo) > LoteGeneral._meta.get_field('codigo').max_length:
+            raise EdicionInvalida(f"El recibo {codigo} es demasiado largo.")
+        camara = lineas[detalle_id].camara_id
+        if camara_por_codigo.setdefault(codigo, camara) != camara:
+            raise EdicionInvalida(
+                f"Las líneas con el recibo {codigo} deben estar en la misma cámara."
+            )
+    en_otra_entrada = (
+        LoteGeneral.objects.filter(codigo__in=camara_por_codigo).exclude(entrada=entrada)
+        .values_list('codigo', flat=True)
+    )
+    if en_otra_entrada:
+        raise EdicionInvalida(f"El recibo {en_otra_entrada[0]} ya está registrado en otra entrada.")
+
+    referencia = referencia_entrada(entrada)
+    registros = []
+    lotes = {lote.codigo: lote for lote in entrada.lotes_generales.all()}
+    for detalle_id, codigo in nuevos.items():
+        linea = lineas[detalle_id]
+        anterior = linea.lote_general.codigo if linea.lote_general_id else ''
+        if anterior == codigo:
+            continue
+        if codigo:
+            lote = lotes.get(codigo)
+            if lote is None:
+                lote = lotes[codigo] = LoteGeneral.objects.create(
+                    codigo=codigo, entrada=entrada, camara=linea.camara,
+                    fecha_recibo=entrada.fecha, creado_por=usuario,
+                )
+            elif lote.camara_id != linea.camara_id:
+                lote.camara = linea.camara
+                lote.save(update_fields=['camara', 'modificado'])
+        else:
+            lote = None
+        EntradaDetalle.objects.filter(id=linea.id).update(lote_general=lote)
+        registros.append(EdicionEntrada(
+            entrada=entrada, entrada_detalle=linea,
+            entrada_referencia=referencia, linea_referencia=_descripcion_linea(linea),
+            campo='recibo_ingreso', valor_anterior=anterior, valor_nuevo=codigo,
+            motivo=MOTIVO_RECIBO, editado_por=usuario,
+        ))
+
+    # Un recibo que ya no agrupa ninguna línea se borra para liberar su código.
+    entrada.lotes_generales.filter(entradas_detalle__isnull=True).delete()
+    EdicionEntrada.objects.bulk_create(registros)
+    return registros

@@ -393,3 +393,78 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
         campos = {r["campo"] for r in bitacora["registros"]}
         self.assertEqual(campos, {"fecha_caducidad", "observaciones"})
         self.assertTrue(all(r["entrada_existe"] for r in bitacora["registros"]))
+
+
+class EditarRecibosApiTests(APITestCase):
+    """El recibo de ingreso (IMP) se captura por línea, aunque la entrada ya tenga salidas."""
+
+    def setUp(self):
+        self.user = crear_usuario_con_area("recibos", AREA_INVENTARIO)
+        self.client.force_authenticate(user=self.user)
+        self.proveedor = Proveedor.objects.create(nombre="CACESA")
+        self.cliente = Cliente.objects.create(nombre="HERAY")
+        self.camara = Camara.objects.create(nombre="CAM-A", tipo=Camara.TIPO_PROPIA)
+        self.otra_camara = Camara.objects.create(nombre="CAM-B", tipo=Camara.TIPO_PROPIA)
+        producto = Producto.objects.create(talla="21-25", tipo="FREEZADO")
+        self.entrada = Entrada.objects.create(
+            fecha="2026-03-01", proveedor=self.proveedor, factura="FACT-REC", empresa=empresa_importadora(),
+        )
+        self.lineas = [
+            EntradaDetalle.objects.create(
+                entrada=self.entrada, producto=producto, lote_proveedor=f"L{i}", camara=camara,
+                cajas=10, peso_por_caja=Decimal("20.00"), total_kilos=Decimal("200.00"),
+                proveedor_origen=self.proveedor,
+            )
+            for i, camara in enumerate([self.camara, self.camara, self.otra_camara])
+        ]
+        salida = Salida.objects.create(folio_de_salida="SAL-1", cliente=self.cliente, fecha="2026-03-05")
+        SalidaDetalle.objects.create(
+            salida=salida, producto=producto, entrada_detalle=self.lineas[0],
+            camara=self.camara, cajas=2, total_kilos=Decimal("40.00"),
+        )
+
+    def _editar(self, recibos, entrada=None):
+        entrada = entrada or self.entrada
+        return self.client.patch(
+            f"/api/inventario/entradas/{entrada.id}/recibos/", {"recibos": recibos}, format="json",
+        )
+
+    def test_asigna_un_recibo_distinto_por_linea_con_salidas_y_deja_bitacora(self):
+        a, b, c = self.lineas
+        respuesta = self._editar({a.id: "imp-1", b.id: "IMP-1", c.id: "IMP-2"})
+
+        self.assertEqual(respuesta.status_code, 200, respuesta.data)
+        self.assertEqual(respuesta.data["recibo_ingreso"], "IMP-1, IMP-2")
+        codigos = {d["id"]: d["lote_general_codigo"] for d in respuesta.data["detalles"]}
+        self.assertEqual(codigos, {a.id: "IMP-1", b.id: "IMP-1", c.id: "IMP-2"})
+        bitacora = EdicionEntrada.objects.filter(entrada=self.entrada, campo="recibo_ingreso")
+        self.assertEqual(bitacora.count(), 3)
+        self.assertEqual(bitacora.first().editado_por, self.user)
+
+    def test_cambiar_un_recibo_libera_el_anterior(self):
+        a, b, c = self.lineas
+        self._editar({a.id: "IMP-1"})
+        self._editar({a.id: "IMP-9"})
+
+        self.assertEqual(list(self.entrada.lotes_generales.values_list("codigo", flat=True)), ["IMP-9"])
+        self.assertEqual(self._editar({a.id: ""}).data["recibo_ingreso"], "")
+
+    def test_rechaza_recibo_de_otra_entrada_o_compartido_entre_camaras(self):
+        a, b, c = self.lineas
+        otra = Entrada.objects.create(
+            fecha="2026-03-02", proveedor=self.proveedor, factura="OTRA", empresa=empresa_importadora(),
+        )
+        linea_otra = EntradaDetalle.objects.create(
+            entrada=otra, producto=a.producto, lote_proveedor="X", camara=self.camara,
+            cajas=1, peso_por_caja=Decimal("20.00"), total_kilos=Decimal("20.00"), proveedor_origen=self.proveedor,
+        )
+        self._editar({linea_otra.id: "IMP-OTRA"}, entrada=otra)
+
+        self.assertEqual(self._editar({a.id: "IMP-OTRA"}).status_code, 400)
+        self.assertEqual(self._editar({a.id: "IMP-X", c.id: "IMP-X"}).status_code, 400)
+        self.assertEqual(self._editar({linea_otra.id: "IMP-Y"}).status_code, 400)  # línea ajena
+
+    def test_solo_lectura_no_puede_editar_recibos(self):
+        lector = crear_usuario_con_area("lector-rec", AREA_INVENTARIO, solo_lectura=True)
+        self.client.force_authenticate(user=lector)
+        self.assertEqual(self._editar({self.lineas[0].id: "IMP-1"}).status_code, 403)

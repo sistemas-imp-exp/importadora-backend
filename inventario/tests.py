@@ -1,4 +1,5 @@
 import importlib
+import io
 from datetime import timedelta
 from decimal import Decimal
 
@@ -972,6 +973,17 @@ class EmpresaEntradaApiTests(APITestCase):
         self.assertEqual({e["empresa_nombre"] for e in existencias}, {"MARISCOS SELECTOS"})
         excel = self.client.get(f"/api/inventario/reportes/existencias/excel/?modo=lote&empresa={self.selectos.id}")
         self.assertEqual(excel.status_code, 200)
+
+        # El Excel replica la tabla de la pantalla: mismas columnas, factura del
+        # lote raíz también en el lote trasladado, y fila de totales al final.
+        from openpyxl import load_workbook
+        filas = list(load_workbook(io.BytesIO(excel.content)).active.iter_rows(values_only=True))
+        self.assertEqual(filas[0][:6], ("Cámara", "Producto", "Proveedor", "Fecha entrada", "Recibo ingreso", "Factura"))
+        self.assertEqual(len(filas[0]), 15)
+        self.assertEqual({f[5] for f in filas[1:-1]}, {"F-SEL"})
+        self.assertEqual(filas[-1][1], "Total (2 lotes)")
+        pdf = self.client.get(f"/api/inventario/reportes/existencias/pdf/?modo=lote&empresa={self.selectos.id}")
+        self.assertTrue(pdf.content.startswith(b"%PDF-"))
 
 
 class EntradaEmpresaMigracionTests(TestCase):

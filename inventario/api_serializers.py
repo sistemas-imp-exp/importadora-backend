@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
 
-from .auditoria import entrada_tiene_salidas, registrar_cambios, tomar_snapshot
+from .auditoria import entrada_tiene_salidas, recibos_de, registrar_cambios, tomar_snapshot
 from .models import (
     Camara,
     Cliente,
@@ -244,8 +244,9 @@ class EntradaSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         # .all()[0] y no .first(): con prefetch_related('lotes_generales') esto lee
         # la caché ya cargada, mientras que .first() vuelve a consultar por entrada.
-        lotes = list(instance.lotes_generales.all())
-        data['recibo_ingreso'] = lotes[0].codigo if lotes else ''
+        # Cada línea puede tener su propio recibo (ver auditoria.editar_recibos):
+        # aquí se resumen todos, sin repetir.
+        data['recibo_ingreso'] = recibos_de(instance)
         return data
 
     def validate_factura(self, value):
@@ -289,7 +290,11 @@ class EntradaSerializer(serializers.ModelSerializer):
             })
 
         recibo_ingreso = data.get('recibo_ingreso')
-        if recibo_ingreso:
+        # Al editar sin tocar el recibo llega el mismo resumen que se devolvió
+        # (puede ser "IMP-1, IMP-2" si cada línea tiene el suyo): no se reaplica.
+        if self.instance and recibo_ingreso == recibos_de(self.instance):
+            data.pop('recibo_ingreso')
+        elif recibo_ingreso:
             conflicto = LoteGeneral.objects.filter(codigo=recibo_ingreso)
             if self.instance:
                 conflicto = conflicto.exclude(entrada=self.instance)

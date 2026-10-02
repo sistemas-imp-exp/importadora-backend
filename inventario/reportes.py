@@ -14,7 +14,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .caducidad import SIN_CADUCIDAD, rango_de_nivel
+from .caducidad import SIN_CADUCIDAD, clasificar_nivel, rango_de_nivel
 from .models import Camara, Empresa, EntradaDetalle
 
 COLOR_ENCABEZADO = "0E6B6F"
@@ -235,37 +235,102 @@ def _estilizar_encabezado(ws, num_columnas):
     ws.row_dimensions[1].height = 20
 
 
+# Columnas del reporte por lote: las mismas y en el mismo orden que la tabla
+# de la pantalla de Existencias (ExistenciasTable.tsx). Cambiar ambos juntos.
+ENCABEZADOS_LOTE = [
+    "Cámara", "Producto", "Proveedor", "Fecha entrada", "Recibo ingreso", "Factura",
+    "Kg/caja", "Cajas disp.", "Entrada kg", "Salida kg", "Saldo kg", "Costo/kg",
+    "Total", "Caducidad", "Lote proveedor",
+]
+ETIQUETA_NIVEL = {"vencido": "Vencido", "critico": "Crítico", "urgente": "Urgente", "por_vencer": "Por vencer"}
+
+
+def _texto_caducidad(fecha, hoy):
+    """Fecha y, si está en alerta, su nivel: "15/10/2026 · Urgente" (como el badge de la pantalla)."""
+    if fecha is None:
+        return "—"
+    nivel = clasificar_nivel((fecha - hoy).days)
+    texto = fecha.strftime("%d/%m/%Y")
+    return f"{texto} · {ETIQUETA_NIVEL[nivel]}" if nivel else texto
+
+
+def filas_existencias_lote(lotes):
+    """
+    Una fila por lote con los valores de la pantalla de Existencias: recibo y
+    factura del lote raíz (documento_origen, igual que /existencias/) y total
+    en pesos solo si el lote tiene costo. Devuelve (filas, totales).
+    """
+    hoy = timezone.localdate()
+    filas = []
+    totales = {"lotes": 0, "cajas": 0, "kilos": Decimal("0"), "pesos": Decimal("0")}
+    for lote in lotes:
+        documento = lote.documento_origen
+        total = lote.kilos_disp * lote.costo_por_kilo if lote.costo_por_kilo is not None else None
+        filas.append({
+            "camara": lote.camara.nombre if lote.camara_id else "Venta directa (sin cámara)",
+            "producto": f"{lote.producto.talla} {lote.producto.tipo}",
+            "proveedor": lote.proveedor_origen.nombre if lote.proveedor_origen_id else "—",
+            "fecha": lote.entrada.fecha,
+            "recibo": documento["recibo"] or "—",
+            "factura": documento["factura"] or "—",
+            "peso_por_caja": lote.peso_por_caja,
+            "cajas": lote.cajas_disp,
+            "entrada_kg": lote.total_kilos,
+            "salida_kg": lote.kilos_vendidos,
+            "saldo_kg": lote.kilos_disp,
+            "costo": lote.costo_por_kilo,
+            "total": total,
+            "caducidad": _texto_caducidad(lote.fecha_caducidad, hoy),
+            "lote_proveedor": lote.lote_proveedor or "",
+        })
+        totales["lotes"] += 1
+        totales["cajas"] += lote.cajas_disp
+        totales["kilos"] += lote.kilos_disp
+        totales["pesos"] += total or Decimal("0")
+    return filas, totales
+
+
 def construir_libro_excel_lote(lotes):
+    filas, totales = filas_existencias_lote(lotes)
     wb = Workbook()
     ws = wb.active
-    ws.title = "Existencias por lote"
-    encabezados = [
-        "Cámara", "Proveedor", "Talla", "Tipo", "Recibo ingreso",
-        "Cajas disponibles", "Kilos disponibles", "Costo/kg", "Lote proveedor",
-    ]
-    ws.append(encabezados)
-    _estilizar_encabezado(ws, len(encabezados))
+    ws.title = "Existencias"
+    ws.append(ENCABEZADOS_LOTE)
+    _estilizar_encabezado(ws, len(ENCABEZADOS_LOTE))
 
-    for lote in lotes:
+    def numero(valor):
+        return float(valor) if valor is not None else None
+
+    for f in filas:
         ws.append([
-            lote.camara.nombre if lote.camara_id else "Venta directa (sin cámara)",
-            lote.proveedor_origen.nombre if lote.proveedor_origen_id else "—",
-            lote.producto.talla,
-            lote.producto.tipo,
-            lote.lote_general.codigo if lote.lote_general_id else "—",
-            lote.cajas_disp,
-            float(lote.kilos_disp),
-            float(lote.costo_por_kilo) if lote.costo_por_kilo is not None else None,
-            lote.lote_proveedor,
+            f["camara"], f["producto"], f["proveedor"], f["fecha"], f["recibo"], f["factura"],
+            numero(f["peso_por_caja"]), f["cajas"], numero(f["entrada_kg"]), numero(f["salida_kg"]),
+            numero(f["saldo_kg"]), numero(f["costo"]), numero(f["total"]), f["caducidad"], f["lote_proveedor"],
         ])
         fila = ws.max_row
-        ws.cell(row=fila, column=7).number_format = "#,##0.00"
-        ws.cell(row=fila, column=8).number_format = "#,##0.00"
+        ws.cell(row=fila, column=4).number_format = "DD/MM/YYYY"
+        for col in (7, 9, 10, 11):
+            ws.cell(row=fila, column=col).number_format = "#,##0.00"
+        ws.cell(row=fila, column=8).number_format = "#,##0"
+        for col in (12, 13):
+            ws.cell(row=fila, column=col).number_format = '"$"#,##0.00'
 
-    anchos = {"A": 20, "B": 20, "C": 12, "D": 14, "E": 16, "F": 16, "G": 16, "H": 12, "I": 18}
-    for col, ancho in anchos.items():
-        ws.column_dimensions[col].width = ancho
-    ws.freeze_panes = "A2"
+    if filas:
+        ws.append([
+            None, f"Total ({totales['lotes']} lotes)", None, None, None, None, None, totales["cajas"],
+            None, None, float(totales["kilos"]), None, float(totales["pesos"]), None, None,
+        ])
+        fila = ws.max_row
+        for col in range(1, len(ENCABEZADOS_LOTE) + 1):
+            ws.cell(row=fila, column=col).font = Font(bold=True)
+        ws.cell(row=fila, column=8).number_format = "#,##0"
+        ws.cell(row=fila, column=11).number_format = "#,##0.00"
+        ws.cell(row=fila, column=13).number_format = '"$"#,##0.00'
+
+    anchos = [22, 18, 22, 13, 15, 15, 10, 11, 12, 12, 12, 12, 15, 22, 18]
+    for col, ancho in enumerate(anchos, start=1):
+        ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = ancho
+    ws.freeze_panes = "C2"
     return wb
 
 
@@ -368,41 +433,67 @@ def _documento_base(titulo):
 
 
 def construir_pdf_existencias_lote(lotes, filtros_descripcion):
-    lotes = list(lotes)
-    buffer, documento = _documento_base("Reporte de existencias por lote")
-    elementos = _encabezado_documento("Existencias por lote", filtros_descripcion)
+    filas, totales = filas_existencias_lote(lotes)
+    buffer, documento = _documento_base("Reporte de existencias")
+    elementos = _encabezado_documento("Existencias", filtros_descripcion)
 
-    encabezados = ["Cámara", "Proveedor", "Talla", "Tipo", "Recibo", "Cajas disp.", "Kilos disp.", "Costo/kg", "Lote"]
-    filas_tabla = [encabezados]
-    for lote in lotes:
+    def kg(valor):
+        return f"{valor:,.2f}"
+
+    def pesos(valor):
+        return f"${valor:,.2f}" if valor is not None else "—"
+
+    estilo_encabezado = ParagraphStyle(
+        "encabezado-lote", parent=_ESTILO_CELDA_CENTRO, textColor=colors.white, fontName="Helvetica-Bold",
+    )
+    estilo_total = ParagraphStyle("total-lote", parent=_ESTILO_CELDA_DERECHA, fontName="Helvetica-Bold")
+    filas_tabla = [[Paragraph(escape(h), estilo_encabezado) for h in ENCABEZADOS_LOTE]]
+    for f in filas:
         filas_tabla.append([
-            _celda(lote.camara.nombre if lote.camara_id else "Venta directa"),
-            _celda(lote.proveedor_origen.nombre if lote.proveedor_origen_id else "—"),
-            _celda(lote.producto.talla, TA_CENTER),
-            _celda(lote.producto.tipo, TA_CENTER),
-            _celda(lote.lote_general.codigo if lote.lote_general_id else "—", TA_CENTER),
-            _celda(f"{lote.cajas_disp:,}", TA_RIGHT),
-            _celda(f"{lote.kilos_disp:,.2f}", TA_RIGHT),
-            _celda(f"{lote.costo_por_kilo:,.2f}" if lote.costo_por_kilo is not None else "—", TA_RIGHT),
-            _celda(lote.lote_proveedor),
+            _celda(f["camara"]),
+            _celda(f["producto"]),
+            _celda(f["proveedor"]),
+            _celda(f["fecha"].strftime("%d/%m/%Y"), TA_CENTER),
+            _celda(f["recibo"], TA_CENTER),
+            _celda(f["factura"], TA_CENTER),
+            _celda(kg(f["peso_por_caja"]), TA_RIGHT),
+            _celda(f"{f['cajas']:,}", TA_RIGHT),
+            _celda(kg(f["entrada_kg"]), TA_RIGHT),
+            _celda(kg(f["salida_kg"]), TA_RIGHT),
+            _celda(kg(f["saldo_kg"]), TA_RIGHT),
+            _celda(pesos(f["costo"]), TA_RIGHT),
+            _celda(pesos(f["total"]), TA_RIGHT),
+            _celda(f["caducidad"], TA_CENTER),
+            _celda(f["lote_proveedor"]),
         ])
 
-    if len(filas_tabla) == 1:
+    if not filas:
         elementos.append(Paragraph("No hay existencias para los filtros seleccionados.", ESTILOS["Normal"]))
     else:
-        anchos = [3 * cm, 3.6 * cm, 2 * cm, 2.4 * cm, 2.6 * cm, 2.6 * cm, 2.6 * cm, 2.2 * cm, 3 * cm]
+        vacia = ""
+        filas_tabla.append([
+            Paragraph(f"Total ({totales['lotes']} lotes)", ParagraphStyle(
+                "total-lote-izq", parent=_ESTILO_CELDA, fontName="Helvetica-Bold")),
+            vacia, vacia, vacia, vacia, vacia, vacia,
+            Paragraph(f"{totales['cajas']:,}", estilo_total), vacia, vacia,
+            Paragraph(kg(totales["kilos"]), estilo_total), vacia,
+            Paragraph(pesos(totales["pesos"]), estilo_total), vacia, vacia,
+        ])
+        # 15 columnas en ~25.3 cm útiles de carta horizontal.
+        anchos = [c * cm for c in (2.2, 1.8, 2.2, 1.6, 1.6, 1.6, 1.3, 1.2, 1.5, 1.5, 1.5, 1.5, 1.9, 2.0, 1.9)]
         tabla = Table(filas_tabla, colWidths=anchos, repeatRows=1)
         tabla.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), COLOR_ENCABEZADO_RL),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 8.5),
-            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#DDDDDD")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7F7F7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#F7F7F7")]),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E9ECEF")),
+            ("SPAN", (0, -1), (1, -1)),
         ]))
         elementos.append(tabla)
 

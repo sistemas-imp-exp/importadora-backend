@@ -8,7 +8,7 @@ from security.permissions import AreaInventario
 
 from .paginacion import PaginacionInventario
 
-from .auditoria import entrada_tiene_salidas, registrar_eliminacion
+from .auditoria import EdicionInvalida, editar_recibos, entrada_tiene_salidas, registrar_eliminacion
 from .models import (
     Camara,
     Cliente,
@@ -131,6 +131,23 @@ class EntradaViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(empresa_id=empresa)
 
         return queryset
+
+    @action(detail=True, methods=['patch'])
+    def recibos(self, request, pk=None):
+        """
+        Recibo de ingreso (IMP) por línea, también en entradas con salidas: el
+        folio suele llegar días después de capturar la entrada.
+        Cuerpo: {"recibos": {"<detalle_id>": "IMP-123", ...}}.
+        """
+        entrada = self.get_object()
+        recibos = request.data.get('recibos')
+        if not isinstance(recibos, dict) or not recibos:
+            return Response({'detail': 'Indica el recibo de al menos una línea.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            editar_recibos(entrada, recibos, request.user)
+        except (EdicionInvalida, ValueError) as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(self.get_object()).data)
 
     @action(detail=False, methods=['get'])
     def resumen(self, request):
