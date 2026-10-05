@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import DecimalField, Exists, OuterRef, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
+from django.http import HttpResponse
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -10,6 +11,7 @@ from rest_framework.response import Response
 from security.permissions import AreaInventario
 
 from .paginacion import PaginacionInventario
+from .exportar_tablas import libro_entradas, libro_salidas
 
 from .auditoria import EdicionInvalida, editar_recibos, entrada_tiene_salidas, registrar_eliminacion
 from .models import (
@@ -89,6 +91,13 @@ class ProductoViewSet(viewsets.ModelViewSet):
         serializer.save(creado_por=self.request.user)
 
 
+def _respuesta_excel(libro, nombre):
+    respuesta = HttpResponse(content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    respuesta["Content-Disposition"] = f'attachment; filename="{nombre}"'
+    libro.save(respuesta)
+    return respuesta
+
+
 class EntradaViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaInventario]
     queryset = (
@@ -151,6 +160,12 @@ class EntradaViewSet(viewsets.ModelViewSet):
         except (EdicionInvalida, ValueError) as e:
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(self.get_object()).data)
+
+    @action(detail=False, methods=['get'])
+    def excel(self, request):
+        """La tabla de Entradas en Excel, con los mismos filtros y sin paginar."""
+        entradas = self.filter_queryset(self.get_queryset()).filter(proveedor__isnull=False)
+        return _respuesta_excel(libro_entradas(entradas), "entradas.xlsx")
 
     @action(detail=False, methods=['get'])
     def resumen(self, request):
@@ -257,6 +272,16 @@ class SalidaViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(fecha__lte=hasta)
 
         return queryset
+
+    @action(detail=False, methods=['get'])
+    def excel(self, request):
+        """La tabla de Salidas en Excel, con los mismos filtros y sin paginar."""
+        salidas = (
+            self.filter_queryset(self.get_queryset())
+            .filter(cliente__isnull=False)
+            .prefetch_related('detalles__camara')
+        )
+        return _respuesta_excel(libro_salidas(salidas), "salidas.xlsx")
 
     def perform_create(self, serializer):
         serializer.save(creado_por=self.request.user)

@@ -1097,3 +1097,48 @@ class EntradaEmpresaMigracionTests(TestCase):
         entrada.refresh_from_db()
         self.assertEqual(entrada.empresa.nombre, "IMPORTADORA")
         self.assertEqual(Empresa.objects.filter(nombre__in=["IMPORTADORA", "MARISCOS SELECTOS"]).count(), 2)
+
+
+class ExcelTablasApiTests(APITestCase):
+    """Entradas y Salidas se descargan en Excel con los filtros de la pantalla."""
+
+    def setUp(self):
+        # Solo lectura también descarga: es un GET.
+        self.client.force_authenticate(user=crear_usuario_con_area("lector-xls", AREA_INVENTARIO, solo_lectura=True))
+        proveedor = Proveedor.objects.create(nombre="CACESA")
+        cliente = Cliente.objects.create(nombre="HERAY")
+        camara = Camara.objects.create(nombre="CAM-XLS", tipo=Camara.TIPO_PROPIA)
+        producto = Producto.objects.create(talla="21-25", tipo="FREEZADO")
+        for fecha, factura in (("2026-03-01", "F-MAR"), ("2026-04-01", "F-ABR")):
+            entrada = Entrada.objects.create(fecha=fecha, proveedor=proveedor, factura=factura, empresa=empresa_importadora())
+            lote = EntradaDetalle.objects.create(
+                entrada=entrada, producto=producto, lote_proveedor=f"L-{factura}", camara=camara, cajas=10,
+                peso_por_caja=Decimal("20.00"), total_kilos=Decimal("200.00"), proveedor_origen=proveedor,
+            )
+        salida = Salida.objects.create(folio_de_salida="V-XLS", cliente=cliente, fecha="2026-04-05")
+        SalidaDetalle.objects.create(
+            salida=salida, producto=producto, entrada_detalle=lote, camara=camara, cajas=2,
+            total_kilos=Decimal("40.00"), precio_x_kilo=Decimal("100.00"), total_venta=Decimal("4000.00"),
+        )
+
+    def _hojas(self, url):
+        from openpyxl import load_workbook
+        respuesta = self.client.get(url)
+        self.assertEqual(respuesta.status_code, 200)
+        libro = load_workbook(io.BytesIO(respuesta.content))
+        return {ws.title: list(ws.iter_rows(values_only=True)) for ws in libro}
+
+    def test_entradas_respeta_filtros_y_trae_detalle(self):
+        hojas = self._hojas("/api/inventario/entradas/excel/?desde=2026-04-01")
+
+        self.assertEqual(list(hojas), ["Entradas", "Detalle"])
+        self.assertEqual([f[3] for f in hojas["Entradas"][1:-1]], ["F-ABR"])
+        self.assertEqual(hojas["Entradas"][-1][1], "Total (1 entradas)")
+        self.assertEqual(hojas["Entradas"][1][12], "Sí")  # con salidas
+        self.assertEqual(hojas["Detalle"][1][6], "L-F-ABR")
+
+    def test_salidas_con_totales_y_detalle(self):
+        hojas = self._hojas("/api/inventario/salidas/excel/?busqueda=heray")
+
+        self.assertEqual(hojas["Salidas"][1][1:8], ("V-XLS", "HERAY", None, 1, 2, 40, 4000))
+        self.assertEqual(hojas["Detalle"][1][4:8], ("L-F-ABR", "CACESA", "CAM-XLS", "—"))
