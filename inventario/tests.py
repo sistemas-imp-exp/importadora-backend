@@ -840,6 +840,38 @@ class MovimientoCamaraApiTests(APITestCase):
         self.assertEqual((bitacora.valor_anterior, bitacora.valor_nuevo), ("", "IMP-DEST"))
         self.assertEqual(bitacora.entrada_detalle_id, movimiento["entrada_detalle_destino"])
 
+    def test_el_recibo_en_destino_se_puede_capturar_al_registrar_el_movimiento(self):
+        response = self.client.post("/api/inventario/movimientos-camara/", {
+            "entrada_detalle_origen": self.lote_origen.id, "camara_destino": self.camara_destino.id,
+            "fecha": "2026-02-10", "cajas": 40, "total_kilos": "800.00", "recibo_destino": " imp-nuevo ",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual((response.data["recibo_destino"], response.data["recibo_destino_propio"]), ("IMP-NUEVO", True))
+        self.assertIsNone(EntradaDetalle.objects.get(id=self.lote_origen.id).lote_general_id)
+        repetido = self.client.post("/api/inventario/movimientos-camara/", {
+            "entrada_detalle_origen": self.lote_origen.id, "camara_destino": self.camara_destino.id,
+            "fecha": "2026-02-11", "cajas": 1, "total_kilos": "20.00", "recibo_destino": "IMP-NUEVO",
+        }, format="json")
+        self.assertEqual(repetido.status_code, 400)
+
+    def test_el_listado_trae_kilos_documentos_y_lo_que_queda_en_destino(self):
+        movimiento = self._mover()
+        salida = Salida.objects.create(folio_de_salida="V-1", fecha="2026-02-12")
+        SalidaDetalle.objects.create(
+            salida=salida, producto=self.producto, camara=self.camara_destino, cajas=5, total_kilos=Decimal("100.00"),
+            entrada_detalle_id=movimiento["entrada_detalle_destino"],
+        )
+
+        fila = self.client.get("/api/inventario/movimientos-camara/").data[0]
+
+        self.assertEqual(
+            (fila["kilos"], fila["proveedor"], fila["factura"], fila["fecha_caducidad"]),
+            ("800.00", "ACUAMAYA", "FACT 4001", "2026-06-01"),
+        )
+        self.assertEqual((fila["cajas_disponibles_destino"], fila["kilos_disponibles_destino"]), (35, "700.00"))
+        self.assertEqual(fila["creado_por"]["username"], "tester5")
+
     def test_un_traslado_posterior_hereda_el_recibo_del_destino(self):
         primero = self._mover()
         self._recibo(primero["id"], "IMP-MEX")

@@ -1,5 +1,8 @@
+from decimal import Decimal
+
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Prefetch, Q
+from django.db.models import DecimalField, Exists, OuterRef, Prefetch, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -280,6 +283,12 @@ class MovimientoCamaraViewSet(
         'entrada_detalle_origen__movimiento_camara_como_destino__entrada_detalle_origen__entrada',
         'entrada_detalle_origen__movimiento_camara_como_destino__entrada_detalle_origen__lote_general',
         'entrada_detalle_destino__entrada', 'entrada_detalle_destino__lote_general',
+        'entrada_detalle_origen__proveedor_origen', 'entrada_detalle_destino__entrada__empresa',
+    ).annotate(
+        destino_kilos_vendidos=Coalesce(
+            Sum('entrada_detalle_destino__salidas_detalle__total_kilos'), Value(Decimal('0')),
+            output_field=DecimalField(max_digits=12, decimal_places=2),
+        ),
     )
     serializer_class = MovimientoCamaraSerializer
 

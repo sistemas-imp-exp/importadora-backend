@@ -584,6 +584,15 @@ class MovimientoCamaraSerializer(serializers.ModelSerializer):
     recibo_origen = serializers.SerializerMethodField()
     recibo_destino = serializers.SerializerMethodField()
     recibo_destino_propio = serializers.SerializerMethodField()
+    kilos = serializers.DecimalField(source='salida_detalle.total_kilos', max_digits=12, decimal_places=2, read_only=True)
+    proveedor = serializers.SerializerMethodField()
+    factura = serializers.SerializerMethodField()
+    empresa = serializers.SerializerMethodField()
+    fecha_caducidad = serializers.DateField(source='entrada_detalle_destino.fecha_caducidad', read_only=True)
+    # Lo que queda HOY en destino de lo que se movió (ya descontadas sus
+    # salidas y traslados posteriores).
+    cajas_disponibles_destino = serializers.SerializerMethodField()
+    kilos_disponibles_destino = serializers.SerializerMethodField()
 
     class Meta:
         model = MovimientoCamara
@@ -591,6 +600,8 @@ class MovimientoCamaraSerializer(serializers.ModelSerializer):
             'id', 'entrada_detalle_origen', 'salida_detalle', 'entrada_detalle_destino',
             'camara_origen', 'camara_destino', 'fecha', 'cajas', 'creado_por', 'lote_origen',
             'recibo_origen', 'recibo_destino', 'recibo_destino_propio',
+            'kilos', 'proveedor', 'factura', 'empresa', 'fecha_caducidad',
+            'cajas_disponibles_destino', 'kilos_disponibles_destino',
         ]
 
     def get_lote_origen(self, obj) -> str:
@@ -606,6 +617,32 @@ class MovimientoCamaraSerializer(serializers.ModelSerializer):
     def get_recibo_destino_propio(self, obj) -> bool:
         return obj.entrada_detalle_destino.lote_general_id is not None
 
+    def get_proveedor(self, obj) -> str:
+        lote = obj.entrada_detalle_origen
+        return lote.proveedor_origen.nombre if lote.proveedor_origen_id else '—'
+
+    def get_factura(self, obj) -> str:
+        return obj.entrada_detalle_origen.documento_origen['factura']
+
+    def get_empresa(self, obj) -> str:
+        entrada = obj.entrada_detalle_destino.entrada
+        return entrada.empresa.nombre if entrada.empresa_id else '—'
+
+    def _destino(self, obj):
+        destino = obj.entrada_detalle_destino
+        # El ViewSet anota lo ya consumido del destino; sin la anotación las
+        # properties lo agregan con una consulta propia.
+        anotado = getattr(obj, 'destino_kilos_vendidos', None)
+        if anotado is not None:
+            destino.kilos_vendidos_anotados = anotado
+        return destino
+
+    def get_cajas_disponibles_destino(self, obj) -> int:
+        return self._destino(obj).cajas_disponibles
+
+    def get_kilos_disponibles_destino(self, obj) -> str:
+        return str(self._destino(obj).kilos_disponibles)
+
 
 class MovimientoCamaraCrearSerializer(serializers.Serializer):
     """
@@ -619,6 +656,16 @@ class MovimientoCamaraCrearSerializer(serializers.Serializer):
     fecha = serializers.DateField()
     cajas = serializers.IntegerField(min_value=1)
     total_kilos = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0)
+    # Recibo de ingreso en la cámara destino, si ya se tiene al registrar el
+    # traslado. Opcional: sin él la mercancía conserva el recibo de origen y se
+    # puede capturar después (movimientos-camara/<id>/recibo/).
+    recibo_destino = serializers.CharField(required=False, allow_blank=True, max_length=30)
+
+    def validate_recibo_destino(self, value):
+        codigo = value.strip().upper()
+        if codigo and LoteGeneral.objects.filter(codigo=codigo).exists():
+            raise serializers.ValidationError('Ya existe un recibo de ingreso con ese código.')
+        return codigo
 
     def validate(self, data):
         origen = data['entrada_detalle_origen']
@@ -644,6 +691,7 @@ class MovimientoCamaraCrearSerializer(serializers.Serializer):
         cajas = validated_data['cajas']
         total_kilos = validated_data['total_kilos']
         creado_por = validated_data.get('creado_por')
+        recibo_destino = validated_data.get('recibo_destino', '')
 
         with transaction.atomic():
             salida = Salida.objects.create(
@@ -686,6 +734,14 @@ class MovimientoCamaraCrearSerializer(serializers.Serializer):
                 # el lote al moverlo de cámara, igual que su costo o su peso por caja.
                 fecha_caducidad=origen.fecha_caducidad,
             )
+            if recibo_destino:
+                # Va en la línea de llegada, igual que el recibo de una entrada
+                # normal: el lote de origen conserva el suyo.
+                entrada_detalle_destino.lote_general = LoteGeneral.objects.create(
+                    codigo=recibo_destino, entrada=entrada_destino, camara=camara_destino,
+                    fecha_recibo=fecha, creado_por=creado_por,
+                )
+                entrada_detalle_destino.save(update_fields=['lote_general'])
 
             movimiento = MovimientoCamara.objects.create(
                 entrada_detalle_origen=origen,
