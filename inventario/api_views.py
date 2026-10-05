@@ -13,9 +13,7 @@ from security.permissions import AreaInventario
 from .paginacion import PaginacionInventario
 from .exportar_tablas import libro_entradas, libro_salidas
 
-from .auditoria import (
-    EdicionInvalida, editar_campos_lineas, editar_recibos, entrada_tiene_salidas, registrar_eliminacion,
-)
+from .auditoria import EdicionInvalida, editar_recibos, entrada_tiene_salidas, registrar_eliminacion
 from .models import (
     Camara,
     Cliente,
@@ -147,19 +145,18 @@ class EntradaViewSet(viewsets.ModelViewSet):
         return queryset
 
     @action(detail=True, methods=['patch'])
-    def campos(self, request, pk=None):
+    def recibos(self, request, pk=None):
         """
-        Edición de campos por línea que no altera existencias, también en
-        entradas con salidas: el recibo de ingreso (IMP) suele llegar días
-        después y el precio de venta planeado alimenta la utilidad.
-        Cuerpo: {"lineas": {"<detalle_id>": {"recibo": "IMP-1", "precio_venta_planeado": "130.00"}}}.
+        Recibo de ingreso (IMP) por línea, también en entradas con salidas: el
+        folio suele llegar días después de capturar la entrada.
+        Cuerpo: {"recibos": {"<detalle_id>": "IMP-123", ...}}.
         """
         entrada = self.get_object()
-        lineas = request.data.get('lineas')
-        if not isinstance(lineas, dict) or not lineas:
-            return Response({'detail': 'Indica los campos de al menos una línea.'}, status=status.HTTP_400_BAD_REQUEST)
+        recibos = request.data.get('recibos')
+        if not isinstance(recibos, dict) or not recibos:
+            return Response({'detail': 'Indica el recibo de al menos una línea.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            editar_campos_lineas(entrada, lineas, request.user)
+            editar_recibos(entrada, recibos, request.user)
         except (EdicionInvalida, ValueError) as e:
             return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(self.get_object()).data)

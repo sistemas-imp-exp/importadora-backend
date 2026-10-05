@@ -70,7 +70,7 @@ def libro_entradas(entradas):
                 f"{d.producto.talla} {d.producto.tipo}", d.lote_proveedor,
                 d.camara.nombre if d.camara_id else "Venta directa",
                 d.cajas, _numero(d.peso_por_caja), _numero(d.total_kilos), _numero(d.kilos_disponibles),
-                _numero(d.costo_por_kilo), _numero(d.precio_venta_planeado), d.fecha_caducidad, d.observaciones or "",
+                _numero(d.costo_por_kilo), d.fecha_caducidad, d.observaciones or "",
             ])
 
     wb = Workbook()
@@ -87,12 +87,11 @@ def libro_entradas(entradas):
     _hoja(
         wb.create_sheet(), "Detalle",
         ["Fecha", "Proveedor", "Empresa", "Factura", "Recibo", "Producto", "Lote proveedor", "Cámara",
-         "Cajas", "Kg/caja", "Total kg", "Disponible kg", "Costo/kg", "Precio venta/kg", "Caducidad",
-         "Observaciones"],
+         "Cajas", "Kg/caja", "Total kg", "Disponible kg", "Costo/kg", "Caducidad", "Observaciones"],
         detalle,
         {1: FORMATO_FECHA, 9: "#,##0", 10: FORMATO_KG, 11: FORMATO_KG, 12: FORMATO_KG,
-         13: FORMATO_PESOS, 14: FORMATO_PESOS, 15: FORMATO_FECHA},
-        [12, 24, 20, 16, 14, 20, 16, 20, 9, 10, 12, 13, 12, 15, 12, 30],
+         13: FORMATO_PESOS, 14: FORMATO_FECHA},
+        [12, 24, 20, 16, 14, 20, 16, 20, 9, 10, 12, 13, 12, 12, 30],
     )
     return wb
 

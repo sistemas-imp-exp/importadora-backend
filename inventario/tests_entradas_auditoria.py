@@ -426,31 +426,8 @@ class EditarRecibosApiTests(APITestCase):
     def _editar(self, recibos, entrada=None):
         entrada = entrada or self.entrada
         return self.client.patch(
-            f"/api/inventario/entradas/{entrada.id}/campos/",
-            {"lineas": {detalle: {"recibo": recibo} for detalle, recibo in recibos.items()}}, format="json",
+            f"/api/inventario/entradas/{entrada.id}/recibos/", {"recibos": recibos}, format="json",
         )
-
-    def test_precio_de_venta_con_salidas_queda_en_bitacora_y_admite_vaciarse(self):
-        a, b, c = self.lineas
-        respuesta = self.client.patch(f"/api/inventario/entradas/{self.entrada.id}/campos/", {"lineas": {
-            a.id: {"precio_venta_planeado": "130.5", "recibo": "IMP-7"},
-            b.id: {"precio_venta_planeado": "120"},
-        }}, format="json")
-
-        self.assertEqual(respuesta.status_code, 200, respuesta.data)
-        precios = {d["id"]: d["precio_venta_planeado"] for d in respuesta.data["detalles"]}
-        self.assertEqual((precios[a.id], precios[b.id], precios[c.id]), ("130.50", "120.00", None))
-        bitacora = EdicionEntrada.objects.filter(entrada=self.entrada)
-        self.assertEqual(sorted(bitacora.values_list("campo", flat=True)),
-                         ["precio_venta_planeado", "precio_venta_planeado", "recibo_ingreso"])
-        self.assertEqual(bitacora.filter(campo="precio_venta_planeado").first().editado_por, self.user)
-
-        vaciado = self.client.patch(f"/api/inventario/entradas/{self.entrada.id}/campos/",
-                                    {"lineas": {a.id: {"precio_venta_planeado": ""}}}, format="json")
-        self.assertIsNone(next(d for d in vaciado.data["detalles"] if d["id"] == a.id)["precio_venta_planeado"])
-        negativo = self.client.patch(f"/api/inventario/entradas/{self.entrada.id}/campos/",
-                                     {"lineas": {a.id: {"precio_venta_planeado": "-1"}}}, format="json")
-        self.assertEqual(negativo.status_code, 400)
 
     def test_asigna_un_recibo_distinto_por_linea_con_salidas_y_deja_bitacora(self):
         a, b, c = self.lineas
