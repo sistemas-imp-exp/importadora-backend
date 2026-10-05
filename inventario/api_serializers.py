@@ -578,17 +578,33 @@ class MovimientoCamaraSerializer(serializers.ModelSerializer):
     # origen puede haber quedado sin existencia, así que no se puede leer de la
     # foto de existencias.
     lote_origen = serializers.SerializerMethodField()
+    # Recibo con el que la mercancía estaba en la cámara de origen, y el que
+    # tiene en destino: el propio de la línea de llegada si ya se capturó
+    # (Editar recibo), si no el heredado. `recibo_destino_propio` distingue ambos.
+    recibo_origen = serializers.SerializerMethodField()
+    recibo_destino = serializers.SerializerMethodField()
+    recibo_destino_propio = serializers.SerializerMethodField()
 
     class Meta:
         model = MovimientoCamara
         fields = [
             'id', 'entrada_detalle_origen', 'salida_detalle', 'entrada_detalle_destino',
             'camara_origen', 'camara_destino', 'fecha', 'cajas', 'creado_por', 'lote_origen',
+            'recibo_origen', 'recibo_destino', 'recibo_destino_propio',
         ]
 
     def get_lote_origen(self, obj) -> str:
         lote = obj.entrada_detalle_origen
         return f"{lote.producto} — lote {lote.lote_proveedor}"
+
+    def get_recibo_origen(self, obj) -> str:
+        return obj.entrada_detalle_origen.documento_origen['recibo']
+
+    def get_recibo_destino(self, obj) -> str:
+        return obj.entrada_detalle_destino.documento_origen['recibo']
+
+    def get_recibo_destino_propio(self, obj) -> bool:
+        return obj.entrada_detalle_destino.lote_general_id is not None
 
 
 class MovimientoCamaraCrearSerializer(serializers.Serializer):

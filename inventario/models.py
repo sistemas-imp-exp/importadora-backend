@@ -319,8 +319,14 @@ class EntradaDetalle(models.Model):
         la cadena de movimientos hasta la compra real. Se calcula en vez de
         copiarse para que corregir la factura (Auditoría de entradas) se refleje
         también en los lotes movidos, sin copias que se queden viejas.
+
+        El recibo es la excepción: al llegar a otra cámara la mercancía puede
+        recibir un recibo nuevo (Movimientos → Editar recibo), que se guarda en
+        la propia línea de llegada. Gana el recibo más cercano en la cadena; si
+        ninguno de los traslados tiene uno propio, se hereda el de la compra.
         """
         lote = self
+        recibo = self.lote_general.codigo if self.lote_general_id else ''
         visitados = set()
         while lote.entrada.proveedor_id is None:
             movimiento = getattr(lote, 'movimiento_camara_como_destino', None)
@@ -328,11 +334,10 @@ class EntradaDetalle(models.Model):
                 break
             visitados.add(lote.id)
             lote = movimiento.entrada_detalle_origen
+            if not recibo and lote.lote_general_id:
+                recibo = lote.lote_general.codigo
 
-        return {
-            'factura': lote.entrada.factura,
-            'recibo': lote.lote_general.codigo if lote.lote_general_id else '',
-        }
+        return {'factura': lote.entrada.factura, 'recibo': recibo}
 
     @property
     def cajas_disponibles(self):

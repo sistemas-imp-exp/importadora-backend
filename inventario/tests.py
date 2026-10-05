@@ -12,7 +12,7 @@ from security.permissions import AREA_INVENTARIO
 from security.testing import crear_usuario_con_area
 
 from .alertas import clasificar_nivel, obtener_lotes_por_vencer
-from .models import Camara, Cliente, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral, Salida, SalidaDetalle, MovimientoCamara
+from .models import Camara, Cliente, EdicionEntrada, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral, Salida, SalidaDetalle, MovimientoCamara
 from .testing import empresa_importadora
 
 
@@ -799,6 +799,74 @@ class MovimientoCamaraApiTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.data)
         lote_destino = EntradaDetalle.objects.get(id=response.data["entrada_detalle_destino"])
         self.assertEqual(str(lote_destino.fecha_caducidad), "2026-06-01")
+
+    def _mover(self, origen=None, destino=None, cajas=40):
+        response = self.client.post("/api/inventario/movimientos-camara/", {
+            "entrada_detalle_origen": (origen or self.lote_origen).id,
+            "camara_destino": (destino or self.camara_destino).id,
+            "fecha": "2026-02-10", "cajas": cajas, "total_kilos": f"{cajas * 20}.00",
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data
+
+    def _recibo(self, movimiento_id, recibo):
+        return self.client.patch(
+            f"/api/inventario/movimientos-camara/{movimiento_id}/recibo/", {"recibo": recibo}, format="json",
+        )
+
+    def test_el_recibo_en_destino_se_guarda_sin_tocar_el_origen_y_deja_bitacora(self):
+        LoteGeneral.objects.create(
+            codigo="IMP-ORIG", entrada=self.lote_origen.entrada, camara=self.camara_origen, fecha_recibo="2026-02-01",
+        )
+        EntradaDetalle.objects.filter(id=self.lote_origen.id).update(lote_general=LoteGeneral.objects.get(codigo="IMP-ORIG"))
+        movimiento = self._mover()
+        self.assertEqual((movimiento["recibo_origen"], movimiento["recibo_destino"]), ("IMP-ORIG", "IMP-ORIG"))
+        self.assertFalse(movimiento["recibo_destino_propio"])
+
+        respuesta = self._recibo(movimiento["id"], "imp-dest")
+
+        self.assertEqual(respuesta.status_code, 200, respuesta.data)
+        consultado = self.client.get(f"/api/inventario/movimientos-camara/{movimiento['id']}/").data
+        self.assertEqual((consultado["recibo_origen"], consultado["recibo_destino"]), ("IMP-ORIG", "IMP-DEST"))
+        self.assertTrue(consultado["recibo_destino_propio"])
+        self.lote_origen.refresh_from_db()
+        self.assertEqual(self.lote_origen.lote_general.codigo, "IMP-ORIG")
+        self.assertEqual(self.lote_origen.entrada.factura, "FACT 4001")
+        existencias = {e["detalle_id"]: e for e in self.client.get("/api/inventario/existencias/").data}
+        destino = existencias[movimiento["entrada_detalle_destino"]]
+        self.assertEqual((destino["recibo_ingreso"], destino["factura"]), ("IMP-DEST", "FACT 4001"))
+        self.assertEqual(existencias[self.lote_origen.id]["recibo_ingreso"], "IMP-ORIG")
+        bitacora = EdicionEntrada.objects.get(campo="recibo_ingreso")
+        self.assertEqual((bitacora.valor_anterior, bitacora.valor_nuevo), ("", "IMP-DEST"))
+        self.assertEqual(bitacora.entrada_detalle_id, movimiento["entrada_detalle_destino"])
+
+    def test_un_traslado_posterior_hereda_el_recibo_del_destino(self):
+        primero = self._mover()
+        self._recibo(primero["id"], "IMP-MEX")
+        tercera = Camara.objects.create(nombre="REMAINS 3", tipo=Camara.TIPO_TERCERO)
+        segundo = self._mover(origen=EntradaDetalle.objects.get(id=primero["entrada_detalle_destino"]), destino=tercera, cajas=10)
+        self.assertEqual(segundo["recibo_destino"], "IMP-MEX")
+
+    def test_vaciar_el_recibo_vuelve_al_heredado(self):
+        movimiento = self._mover()
+        self._recibo(movimiento["id"], "IMP-1")
+        respuesta = self._recibo(movimiento["id"], "")
+        self.assertEqual((respuesta.data["recibo_destino"], respuesta.data["recibo_destino_propio"]), ("", False))
+        self.assertFalse(LoteGeneral.objects.filter(codigo="IMP-1").exists())
+
+    def test_recibo_repetido_o_sin_dato_se_rechaza_y_solo_lectura_no_edita(self):
+        movimiento = self._mover()
+        LoteGeneral.objects.create(
+            codigo="IMP-USADO", entrada=self.lote_origen.entrada, camara=self.camara_origen, fecha_recibo="2026-02-01",
+        )
+        self.assertEqual(self._recibo(movimiento["id"], "IMP-USADO").status_code, 400)
+        self.assertEqual(
+            self.client.patch(f"/api/inventario/movimientos-camara/{movimiento['id']}/recibo/", {}, format="json").status_code,
+            400,
+        )
+        lector = crear_usuario_con_area("lector-mov", AREA_INVENTARIO, solo_lectura=True)
+        self.client.force_authenticate(user=lector)
+        self.assertEqual(self._recibo(movimiento["id"], "IMP-X").status_code, 403)
 
 
 class ClasificarNivelTests(TestCase):

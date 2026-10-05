@@ -274,8 +274,33 @@ class MovimientoCamaraViewSet(
     queryset = MovimientoCamara.objects.select_related(
         'entrada_detalle_origen__producto', 'entrada_detalle_destino',
         'camara_origen', 'camara_destino', 'salida_detalle', 'creado_por',
+        # Lo que recorre documento_origen para los recibos de origen y destino
+        # (un nivel de traslado previo): sin esto son varias consultas por fila.
+        'entrada_detalle_origen__entrada', 'entrada_detalle_origen__lote_general',
+        'entrada_detalle_origen__movimiento_camara_como_destino__entrada_detalle_origen__entrada',
+        'entrada_detalle_origen__movimiento_camara_como_destino__entrada_detalle_origen__lote_general',
+        'entrada_detalle_destino__entrada', 'entrada_detalle_destino__lote_general',
     )
     serializer_class = MovimientoCamaraSerializer
+
+    @action(detail=True, methods=['patch'])
+    def recibo(self, request, pk=None):
+        """
+        Recibo de ingreso de la mercancía en la cámara destino: {"recibo": "IMP-123"}.
+
+        Se guarda en la línea de llegada del movimiento, nunca en la entrada
+        original, y queda en la bitácora igual que "Editar recibo" de Entradas.
+        Vacío lo quita y la línea vuelve a mostrar el recibo heredado del origen.
+        """
+        movimiento = self.get_object()
+        if 'recibo' not in request.data:
+            return Response({'recibo': 'Indica el recibo de ingreso.'}, status=status.HTTP_400_BAD_REQUEST)
+        destino = movimiento.entrada_detalle_destino
+        try:
+            editar_recibos(destino.entrada, {destino.id: request.data.get('recibo') or ''}, request.user)
+        except EdicionInvalida as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(self.get_object()).data)
 
     def create(self, request, *args, **kwargs):
         entrada_serializer = MovimientoCamaraCrearSerializer(data=request.data)
