@@ -279,7 +279,11 @@ class SalidaViewSet(viewsets.ModelViewSet):
         salidas = (
             self.filter_queryset(self.get_queryset())
             .filter(cliente__isnull=False)
-            .prefetch_related('detalles__camara')
+            .prefetch_related(
+                'detalles__camara', 'detalles__entrada_detalle__entrada', 'detalles__entrada_detalle__lote_general',
+                'detalles__entrada_detalle__movimiento_camara_como_destino__entrada_detalle_origen__entrada',
+                'detalles__entrada_detalle__movimiento_camara_como_destino__entrada_detalle_origen__lote_general',
+            )
         )
         return _respuesta_excel(libro_salidas(salidas), "salidas.xlsx")
 

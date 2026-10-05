@@ -1079,7 +1079,8 @@ class EmpresaEntradaApiTests(APITestCase):
         from openpyxl import load_workbook
         filas = list(load_workbook(io.BytesIO(excel.content)).active.iter_rows(values_only=True))
         self.assertEqual(filas[0][:6], ("Cámara", "Producto", "Proveedor", "Fecha entrada", "Recibo ingreso", "Factura"))
-        self.assertEqual(len(filas[0]), 15)
+        self.assertEqual(len(filas[0]), 16)
+        self.assertEqual(filas[0][12:14], ("Total", "Utilidad"))
         self.assertEqual({f[5] for f in filas[1:-1]}, {"F-SEL"})
         self.assertEqual(filas[-1][1], "Total (2 lotes)")
         pdf = self.client.get(f"/api/inventario/reportes/existencias/pdf/?modo=lote&empresa={self.selectos.id}")
@@ -1099,6 +1100,42 @@ class EntradaEmpresaMigracionTests(TestCase):
         self.assertEqual(Empresa.objects.filter(nombre__in=["IMPORTADORA", "MARISCOS SELECTOS"]).count(), 2)
 
 
+class QuitarEmpresaDuplicadaMigracionTests(TestCase):
+    def test_pasa_entradas_y_camaras_a_importadora_y_borra_la_repetida(self):
+        from django.apps import apps
+        migracion = importlib.import_module("inventario.migrations.0020_quitar_empresa_duplicada")
+        duplicada = Empresa.objects.create(nombre="IMPORTADORA DE MARISCOS")
+        entrada = Entrada.objects.create(fecha="2026-01-05", factura="X", empresa=duplicada)
+        camara = Camara.objects.create(nombre="CAM-DUP", tipo=Camara.TIPO_PROPIA, empresa=duplicada)
+
+        migracion.quitar_duplicada(apps, None)
+
+        entrada.refresh_from_db()
+        camara.refresh_from_db()
+        self.assertEqual((entrada.empresa, camara.empresa), (empresa_importadora(), empresa_importadora()))
+        self.assertFalse(Empresa.objects.filter(nombre="IMPORTADORA DE MARISCOS").exists())
+
+
+class UtilidadExistenciasTests(TestCase):
+    def test_utilidad_solo_con_precio_y_costo(self):
+        from .reportes import filas_existencias_lote, obtener_lotes_filtrados
+        proveedor = Proveedor.objects.create(nombre="P")
+        camara = Camara.objects.create(nombre="CAM-UT", tipo=Camara.TIPO_PROPIA)
+        entrada = Entrada.objects.create(fecha="2026-01-05", proveedor=proveedor, factura="F", empresa=empresa_importadora())
+        for talla, costo, precio in (("21-25", "100", "130"), ("26-30", "100", None)):
+            EntradaDetalle.objects.create(
+                entrada=entrada, producto=Producto.objects.create(talla=talla, tipo="FREEZADO"), lote_proveedor="L",
+                camara=camara, cajas=10, peso_por_caja=Decimal("20"), total_kilos=Decimal("200"),
+                costo_por_kilo=Decimal(costo), precio_venta_planeado=Decimal(precio) if precio else None,
+                proveedor_origen=proveedor,
+            )
+
+        filas, totales = filas_existencias_lote(obtener_lotes_filtrados({}))
+
+        self.assertEqual(sorted(f["utilidad"] for f in filas if f["utilidad"] is not None), [Decimal("6000")])
+        self.assertEqual(totales["utilidad"], Decimal("6000"))
+
+
 class ExcelTablasApiTests(APITestCase):
     """Entradas y Salidas se descargan en Excel con los filtros de la pantalla."""
 
@@ -1114,6 +1151,9 @@ class ExcelTablasApiTests(APITestCase):
             lote = EntradaDetalle.objects.create(
                 entrada=entrada, producto=producto, lote_proveedor=f"L-{factura}", camara=camara, cajas=10,
                 peso_por_caja=Decimal("20.00"), total_kilos=Decimal("200.00"), proveedor_origen=proveedor,
+                lote_general=LoteGeneral.objects.create(
+                    codigo=f"IMP-{factura[2:]}", entrada=entrada, camara=camara, fecha_recibo=fecha,
+                ),
             )
         salida = Salida.objects.create(folio_de_salida="V-XLS", cliente=cliente, fecha="2026-04-05")
         SalidaDetalle.objects.create(
@@ -1141,4 +1181,5 @@ class ExcelTablasApiTests(APITestCase):
         hojas = self._hojas("/api/inventario/salidas/excel/?busqueda=heray")
 
         self.assertEqual(hojas["Salidas"][1][1:8], ("V-XLS", "HERAY", None, 1, 2, 40, 4000))
-        self.assertEqual(hojas["Detalle"][1][4:8], ("L-F-ABR", "CACESA", "CAM-XLS", "—"))
+        self.assertEqual(hojas["Detalle"][0][7], "Recibo")
+        self.assertEqual(hojas["Detalle"][1][4:9], ("L-F-ABR", "CACESA", "CAM-XLS", "IMP-ABR", "—"))

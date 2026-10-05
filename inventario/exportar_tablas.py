@@ -120,7 +120,10 @@ def libro_salidas(salidas):
                 s.fecha, s.folio_de_salida, cliente, f"{d.producto.talla} {d.producto.tipo}",
                 origen.lote_proveedor if origen else "—",
                 origen.proveedor_origen.nombre if origen and origen.proveedor_origen_id else "—",
-                d.camara.nombre if d.camara_id else "—", d.factura_proveedor or "—",
+                d.camara.nombre if d.camara_id else "—",
+                # Recibo de la cámara de donde salió: el de destino si el lote llegó por traslado.
+                (origen.documento_origen["recibo"] or "—") if origen else "—",
+                d.factura_proveedor or "—",
                 d.cajas, _numero(d.total_kilos), _numero(d.precio_x_kilo), _numero(d.total_venta), d.notas or "",
             ])
 
@@ -137,10 +140,10 @@ def libro_salidas(salidas):
     )
     _hoja(
         wb.create_sheet(), "Detalle",
-        ["Fecha", "Folio", "Cliente", "Producto", "Lote origen", "Proveedor", "Cámara", "Factura proveedor",
-         "Cajas", "Total kg", "Precio/kg", "Total venta", "Nota"],
+        ["Fecha", "Folio", "Cliente", "Producto", "Lote origen", "Proveedor", "Cámara", "Recibo",
+         "Factura proveedor", "Cajas", "Total kg", "Precio/kg", "Total venta", "Nota"],
         detalle,
-        {1: FORMATO_FECHA, 9: "#,##0", 10: FORMATO_KG, 11: FORMATO_PESOS, 12: FORMATO_PESOS},
-        [12, 16, 26, 20, 16, 24, 20, 18, 9, 12, 12, 14, 30],
+        {1: FORMATO_FECHA, 10: "#,##0", 11: FORMATO_KG, 12: FORMATO_PESOS, 13: FORMATO_PESOS},
+        [12, 16, 26, 20, 16, 24, 20, 14, 18, 9, 12, 12, 14, 30],
     )
     return wb

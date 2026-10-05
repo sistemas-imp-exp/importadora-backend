@@ -240,7 +240,7 @@ def _estilizar_encabezado(ws, num_columnas):
 ENCABEZADOS_LOTE = [
     "Cámara", "Producto", "Proveedor", "Fecha entrada", "Recibo ingreso", "Factura",
     "Kg/caja", "Cajas disp.", "Entrada kg", "Salida kg", "Saldo kg", "Costo/kg",
-    "Total", "Caducidad", "Lote proveedor",
+    "Total", "Utilidad", "Caducidad", "Lote proveedor",
 ]
 ETIQUETA_NIVEL = {"vencido": "Vencido", "critico": "Crítico", "urgente": "Urgente", "por_vencer": "Por vencer"}
 
@@ -257,15 +257,20 @@ def _texto_caducidad(fecha, hoy):
 def filas_existencias_lote(lotes):
     """
     Una fila por lote con los valores de la pantalla de Existencias: recibo y
-    factura del lote raíz (documento_origen, igual que /existencias/) y total
-    en pesos solo si el lote tiene costo. Devuelve (filas, totales).
+    factura del lote raíz (documento_origen, igual que /existencias/), total
+    en pesos solo si el lote tiene costo y utilidad (saldo kg × (precio de
+    venta planeado − costo/kg)) solo si tiene ambos. Devuelve (filas, totales).
     """
     hoy = timezone.localdate()
     filas = []
-    totales = {"lotes": 0, "cajas": 0, "kilos": Decimal("0"), "pesos": Decimal("0")}
+    totales = {"lotes": 0, "cajas": 0, "kilos": Decimal("0"), "pesos": Decimal("0"), "utilidad": Decimal("0")}
     for lote in lotes:
         documento = lote.documento_origen
         total = lote.kilos_disp * lote.costo_por_kilo if lote.costo_por_kilo is not None else None
+        utilidad = (
+            lote.kilos_disp * (lote.precio_venta_planeado - lote.costo_por_kilo)
+            if lote.costo_por_kilo is not None and lote.precio_venta_planeado is not None else None
+        )
         filas.append({
             "camara": lote.camara.nombre if lote.camara_id else "Venta directa (sin cámara)",
             "producto": f"{lote.producto.talla} {lote.producto.tipo}",
@@ -280,6 +285,7 @@ def filas_existencias_lote(lotes):
             "saldo_kg": lote.kilos_disp,
             "costo": lote.costo_por_kilo,
             "total": total,
+            "utilidad": utilidad,
             "caducidad": _texto_caducidad(lote.fecha_caducidad, hoy),
             "lote_proveedor": lote.lote_proveedor or "",
         })
@@ -287,6 +293,7 @@ def filas_existencias_lote(lotes):
         totales["cajas"] += lote.cajas_disp
         totales["kilos"] += lote.kilos_disp
         totales["pesos"] += total or Decimal("0")
+        totales["utilidad"] += utilidad or Decimal("0")
     return filas, totales
 
 
@@ -305,20 +312,22 @@ def construir_libro_excel_lote(lotes):
         ws.append([
             f["camara"], f["producto"], f["proveedor"], f["fecha"], f["recibo"], f["factura"],
             numero(f["peso_por_caja"]), f["cajas"], numero(f["entrada_kg"]), numero(f["salida_kg"]),
-            numero(f["saldo_kg"]), numero(f["costo"]), numero(f["total"]), f["caducidad"], f["lote_proveedor"],
+            numero(f["saldo_kg"]), numero(f["costo"]), numero(f["total"]), numero(f["utilidad"]),
+            f["caducidad"], f["lote_proveedor"],
         ])
         fila = ws.max_row
         ws.cell(row=fila, column=4).number_format = "DD/MM/YYYY"
         for col in (7, 9, 10, 11):
             ws.cell(row=fila, column=col).number_format = "#,##0.00"
         ws.cell(row=fila, column=8).number_format = "#,##0"
-        for col in (12, 13):
+        for col in (12, 13, 14):
             ws.cell(row=fila, column=col).number_format = '"$"#,##0.00'
 
     if filas:
         ws.append([
             None, f"Total ({totales['lotes']} lotes)", None, None, None, None, None, totales["cajas"],
-            None, None, float(totales["kilos"]), None, float(totales["pesos"]), None, None,
+            None, None, float(totales["kilos"]), None, float(totales["pesos"]), float(totales["utilidad"]),
+            None, None,
         ])
         fila = ws.max_row
         for col in range(1, len(ENCABEZADOS_LOTE) + 1):
@@ -326,8 +335,9 @@ def construir_libro_excel_lote(lotes):
         ws.cell(row=fila, column=8).number_format = "#,##0"
         ws.cell(row=fila, column=11).number_format = "#,##0.00"
         ws.cell(row=fila, column=13).number_format = '"$"#,##0.00'
+        ws.cell(row=fila, column=14).number_format = '"$"#,##0.00'
 
-    anchos = [22, 18, 22, 13, 15, 15, 10, 11, 12, 12, 12, 12, 15, 22, 18]
+    anchos = [22, 18, 22, 13, 15, 15, 10, 11, 12, 12, 12, 12, 15, 15, 22, 18]
     for col, ancho in enumerate(anchos, start=1):
         ws.column_dimensions[ws.cell(row=1, column=col).column_letter].width = ancho
     ws.freeze_panes = "C2"
@@ -463,6 +473,7 @@ def construir_pdf_existencias_lote(lotes, filtros_descripcion):
             _celda(kg(f["saldo_kg"]), TA_RIGHT),
             _celda(pesos(f["costo"]), TA_RIGHT),
             _celda(pesos(f["total"]), TA_RIGHT),
+            _celda(pesos(f["utilidad"]), TA_RIGHT),
             _celda(f["caducidad"], TA_CENTER),
             _celda(f["lote_proveedor"]),
         ])
@@ -477,10 +488,11 @@ def construir_pdf_existencias_lote(lotes, filtros_descripcion):
             vacia, vacia, vacia, vacia, vacia, vacia,
             Paragraph(f"{totales['cajas']:,}", estilo_total), vacia, vacia,
             Paragraph(kg(totales["kilos"]), estilo_total), vacia,
-            Paragraph(pesos(totales["pesos"]), estilo_total), vacia, vacia,
+            Paragraph(pesos(totales["pesos"]), estilo_total), Paragraph(pesos(totales["utilidad"]), estilo_total),
+            vacia, vacia,
         ])
-        # 15 columnas en ~25.3 cm útiles de carta horizontal.
-        anchos = [c * cm for c in (2.2, 1.8, 2.2, 1.6, 1.6, 1.6, 1.3, 1.2, 1.5, 1.5, 1.5, 1.5, 1.9, 2.0, 1.9)]
+        # 16 columnas en ~25.3 cm útiles de carta horizontal.
+        anchos = [c * cm for c in (2.0, 1.7, 2.0, 1.5, 1.5, 1.5, 1.1, 1.1, 1.4, 1.4, 1.4, 1.3, 1.8, 1.8, 1.9, 1.6)]
         tabla = Table(filas_tabla, colWidths=anchos, repeatRows=1)
         tabla.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), COLOR_ENCABEZADO_RL),
