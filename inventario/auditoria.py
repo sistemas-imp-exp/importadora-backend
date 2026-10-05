@@ -12,6 +12,8 @@ Deliberadamente FUERA de la lista: cajas, total_kilos, peso_por_caja, producto,
 camara, costo_por_kilo, fecha y proveedor. Todos alteran existencias, valuación
 o trazabilidad ya consumida por documentos posteriores.
 """
+from decimal import Decimal, InvalidOperation
+
 from django.db import transaction
 
 from .models import EdicionEntrada, Entrada, EntradaDetalle, LoteGeneral
@@ -380,3 +382,49 @@ def editar_recibos(entrada: Entrada, recibos: dict, usuario) -> list:
     entrada.lotes_generales.filter(entradas_detalle__isnull=True).delete()
     EdicionEntrada.objects.bulk_create(registros)
     return registros
+
+
+MOTIVO_CAMPOS = 'Edición de campos desde Entradas'
+
+
+@transaction.atomic
+def editar_campos_lineas(entrada: Entrada, lineas: dict, usuario) -> list:
+    """
+    Edición de campos por línea que no altera la contabilidad del inventario,
+    permitida aunque la entrada ya tenga salidas (botón "Edición de campos"):
+
+        {detalle_id: {"recibo": "IMP-1", "precio_venta_planeado": "130.00"}}
+
+    Cada clave es opcional. El recibo pasa por editar_recibos() (solo líneas en
+    cámara); el precio de venta admite vaciarse. Todo deja fila en la bitácora.
+    """
+    detalles = {d.id: d for d in entrada.detalles.select_related('producto')}
+    recibos, registros_precio = {}, []
+    for detalle_id, cambios in lineas.items():
+        if not isinstance(cambios, dict):
+            raise EdicionInvalida('Formato inválido: cada línea lleva sus campos a editar.')
+        detalle = detalles.get(int(detalle_id))
+        if detalle is None:
+            raise EdicionInvalida(f"La línea {detalle_id} no pertenece a esta entrada.")
+        if 'recibo' in cambios:
+            recibos[detalle.id] = cambios['recibo']
+        if 'precio_venta_planeado' in cambios:
+            precio = cambios['precio_venta_planeado']
+            if precio not in (None, ''):
+                try:
+                    precio = Decimal(str(precio)).quantize(Decimal('0.01'))
+                except (InvalidOperation, ValueError):
+                    raise EdicionInvalida(f"Precio de venta inválido: {precio}.")
+                if precio < 0 or precio >= Decimal('100000000'):
+                    raise EdicionInvalida(f"Precio de venta fuera de rango: {precio}.")
+            antes = len(registros_precio)
+            _aplicar_a_objeto(
+                detalle, {'precio_venta_planeado'}, {'precio_venta_planeado': precio},
+                registros_precio, entrada, detalle, MOTIVO_CAMPOS, usuario,
+            )
+            if len(registros_precio) > antes:
+                detalle.save(update_fields=['precio_venta_planeado'])
+
+    EdicionEntrada.objects.bulk_create(registros_precio)
+    registros_recibo = editar_recibos(entrada, recibos, usuario) if recibos else []
+    return registros_precio + registros_recibo

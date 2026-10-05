@@ -1176,6 +1176,7 @@ class ExcelTablasApiTests(APITestCase):
         self.assertEqual(hojas["Entradas"][-1][1], "Total (1 entradas)")
         self.assertEqual(hojas["Entradas"][1][12], "Sí")  # con salidas
         self.assertEqual(hojas["Detalle"][1][6], "L-F-ABR")
+        self.assertEqual(hojas["Detalle"][0][12:14], ("Costo/kg", "Precio venta/kg"))
 
     def test_salidas_con_totales_y_detalle(self):
         hojas = self._hojas("/api/inventario/salidas/excel/?busqueda=heray")
