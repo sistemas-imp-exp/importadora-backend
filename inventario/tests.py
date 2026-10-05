@@ -1079,8 +1079,7 @@ class EmpresaEntradaApiTests(APITestCase):
         from openpyxl import load_workbook
         filas = list(load_workbook(io.BytesIO(excel.content)).active.iter_rows(values_only=True))
         self.assertEqual(filas[0][:6], ("Cámara", "Producto", "Proveedor", "Fecha entrada", "Recibo ingreso", "Factura"))
-        self.assertEqual(len(filas[0]), 16)
-        self.assertEqual(filas[0][12:14], ("Total", "Utilidad"))
+        self.assertEqual(len(filas[0]), 15)
         self.assertEqual({f[5] for f in filas[1:-1]}, {"F-SEL"})
         self.assertEqual(filas[-1][1], "Total (2 lotes)")
         pdf = self.client.get(f"/api/inventario/reportes/existencias/pdf/?modo=lote&empresa={self.selectos.id}")
@@ -1114,26 +1113,6 @@ class QuitarEmpresaDuplicadaMigracionTests(TestCase):
         camara.refresh_from_db()
         self.assertEqual((entrada.empresa, camara.empresa), (empresa_importadora(), empresa_importadora()))
         self.assertFalse(Empresa.objects.filter(nombre="IMPORTADORA DE MARISCOS").exists())
-
-
-class UtilidadExistenciasTests(TestCase):
-    def test_utilidad_solo_con_precio_y_costo(self):
-        from .reportes import filas_existencias_lote, obtener_lotes_filtrados
-        proveedor = Proveedor.objects.create(nombre="P")
-        camara = Camara.objects.create(nombre="CAM-UT", tipo=Camara.TIPO_PROPIA)
-        entrada = Entrada.objects.create(fecha="2026-01-05", proveedor=proveedor, factura="F", empresa=empresa_importadora())
-        for talla, costo, precio in (("21-25", "100", "130"), ("26-30", "100", None)):
-            EntradaDetalle.objects.create(
-                entrada=entrada, producto=Producto.objects.create(talla=talla, tipo="FREEZADO"), lote_proveedor="L",
-                camara=camara, cajas=10, peso_por_caja=Decimal("20"), total_kilos=Decimal("200"),
-                costo_por_kilo=Decimal(costo), precio_venta_planeado=Decimal(precio) if precio else None,
-                proveedor_origen=proveedor,
-            )
-
-        filas, totales = filas_existencias_lote(obtener_lotes_filtrados({}))
-
-        self.assertEqual(sorted(f["utilidad"] for f in filas if f["utilidad"] is not None), [Decimal("6000")])
-        self.assertEqual(totales["utilidad"], Decimal("6000"))
 
 
 class ExcelTablasApiTests(APITestCase):
