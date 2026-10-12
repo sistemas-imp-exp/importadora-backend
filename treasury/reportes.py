@@ -334,7 +334,7 @@ def construir_pdf_movimientos(lineas, resumen, fecha_inicio, fecha_fin, filtros_
     if len(filas_saldo) == 1:
         elementos.append(Paragraph("Sin saldo en caja a esa fecha.", ESTILOS["Normal"]))
     else:
-        tabla_saldo = Table(filas_saldo, colWidths=[2.5 * cm, 4 * cm], hAlign="LEFT")
+        tabla_saldo = Table(filas_saldo, colWidths=[2.5 * cm, 4 * cm])  # centrada, como el resumen
         tabla_saldo.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), COLOR_ENCABEZADO_RL),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
