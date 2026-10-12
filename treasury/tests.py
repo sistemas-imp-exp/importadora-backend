@@ -443,6 +443,21 @@ class ReporteMovimientosApiTests(APITestCase):
         self.assertTrue(respuesta.content.startswith(b'%PDF-'))
         self.assertGreater(len(respuesta.content), 500)
 
+    def test_pdf_incluye_el_saldo_en_caja_al_cierre_sin_filtros(self):
+        from unittest import mock
+
+        from . import reportes
+
+        with mock.patch.object(reportes, 'saldos_al', wraps=reportes.saldos_al) as saldos:
+            respuesta = self.client.get('/api/treasury/reportes/movimientos/pdf/', {
+                'fecha_inicio': self.dia1.isoformat(), 'fecha_fin': self.dia2.isoformat(), 'tipo': 'I',
+            })
+
+        self.assertEqual(respuesta.status_code, 200)
+        saldos.assert_called_once_with(self.dia2)
+        # Toda la caja, aunque el reporte filtre solo ingresos: MXN 1000 − 300, USD 200 (el egreso USD está cancelado).
+        self.assertEqual(saldos_al(self.dia2), {self.mxn.id: Decimal('700.00'), self.usd.id: Decimal('200.00')})
+
     def test_pdf_responde_mensaje_amigable_si_falta_el_rango_de_fechas(self):
         respuesta = self.client.get('/api/treasury/reportes/movimientos/pdf/')
 

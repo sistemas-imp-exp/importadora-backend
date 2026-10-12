@@ -17,6 +17,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .models import Divisa, MovimientoDivisa, MovimientoTesoreria
+from .saldos import saldos_al
 
 PREVIEW_LIMIT = 20
 
@@ -317,6 +318,40 @@ def construir_pdf_movimientos(lineas, resumen, fecha_inicio, fecha_fin, filtros_
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ]))
         elementos.append(tabla_resumen)
+
+    # --- Saldo en caja ---
+    # Lo que queda en caja al cierre del periodo: la caja completa (saldo
+    # inicial + todos los movimientos hasta fecha_fin), sin los filtros del
+    # reporte, igual que Caja diaria de ese día.
+    saldos = saldos_al(fecha_fin)
+    divisas = {d.id: d for d in Divisa.objects.filter(id__in=saldos)}
+    elementos.append(Spacer(1, 0.5 * cm))
+    elementos.append(Paragraph(f"Saldo en caja al {fecha_fin.strftime('%d/%m/%Y')}", estilo_h2))
+    filas_saldo = [["Divisa", "Saldo"]] + [
+        [divisas[i].codigo, f"{'−' if saldo < 0 else ''}{divisas[i].simbolo}{abs(saldo):,.2f}"]
+        for i, saldo in sorted(saldos.items(), key=lambda par: divisas[par[0]].codigo)
+    ]
+    if len(filas_saldo) == 1:
+        elementos.append(Paragraph("Sin saldo en caja a esa fecha.", ESTILOS["Normal"]))
+    else:
+        tabla_saldo = Table(filas_saldo, colWidths=[2.5 * cm, 4 * cm], hAlign="LEFT")
+        tabla_saldo.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), COLOR_ENCABEZADO_RL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DDDDDD")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7F7F7")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elementos.append(tabla_saldo)
+    if filtros_descripcion:
+        elementos.append(Paragraph(
+            "El saldo es de toda la caja: no aplica los filtros del reporte.",
+            ParagraphStyle("nota-saldo", parent=ESTILOS["Normal"], fontSize=7.5, textColor=colors.HexColor("#777777")),
+        ))
 
     elementos.append(Spacer(1, 0.7 * cm))
 
