@@ -5,6 +5,8 @@ from .api_views import (
     BancoViewSet,
     CajaDiariaViewSet,
     DenominacionViewSet,
+    DeudaViewSet,
+    DeudorViewSet,
     DivisaViewSet,
     EmpleadoViewSet,
     MovimientoArchivoViewSet,
@@ -31,6 +33,8 @@ router.register(r'puestos', PuestoViewSet)
 router.register(r'bancos', BancoViewSet)
 router.register(r'empleados', EmpleadoViewSet)
 router.register(r'nominas', NominaSemanalViewSet)
+router.register(r'deudores', DeudorViewSet)
+router.register(r'deudas', DeudaViewSet, basename='deudas')
 
 urlpatterns = [
     path('reportes/movimientos/excel/', exportar_movimientos_excel),

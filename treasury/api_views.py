@@ -1,9 +1,11 @@
 from accounts.permissions import EsSuperusuario
 from django.core.exceptions import ValidationError as DjangoValidationError
+from collections import Counter
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db.models import Count
+from django.db.models import Count, Prefetch, Q
+from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import mixins, viewsets, status
@@ -16,6 +18,8 @@ from .models import (
     Banco,
     ConfiguracionFolio,
     Denominacion,
+    Deuda,
+    Deudor,
     Divisa,
     Empleado,
     MovimientoArchivo,
@@ -29,6 +33,8 @@ from .api_serializers import (
     ArqueoCajaSerializer,
     BancoSerializer,
     DenominacionSerializer,
+    DeudaSerializer,
+    DeudorSerializer,
     DivisaSerializer,
     EmpleadoSerializer,
     GuardarSaldosInicialesSerializer,
@@ -39,6 +45,7 @@ from .api_serializers import (
     RanchoSerializer,
     UsuarioResponsableSerializer,
 )
+from .reportes_deudas import construir_excel_estado_cuenta, construir_pdf_estado_cuenta
 from .saldos import historial, resumen_dia
 
 
@@ -183,7 +190,11 @@ class CajaDiariaViewSet(viewsets.ViewSet):
 
 class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaTesoreria]
-    queryset = MovimientoTesoreria.objects.prefetch_related('divisas__divisa').order_by('-fecha', '-creado')
+    queryset = (
+        MovimientoTesoreria.objects.select_related('deuda__deudor')
+        .prefetch_related('divisas__divisa')
+        .order_by('-fecha', '-creado')
+    )
     serializer_class = MovimientoTesoreriaSerializer
 
     def get_queryset(self):
@@ -350,3 +361,112 @@ class MovimientoArchivoViewSet(
         if movimiento_id:
             queryset = queryset.filter(movimiento_id=movimiento_id)
         return queryset
+
+
+def _abonos_prefetch():
+    return Prefetch(
+        'abonos',
+        queryset=MovimientoTesoreria.objects.select_related('usuario', 'usuario_cancelacion').prefetch_related('divisas'),
+    )
+
+
+class DeudorViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Catálogo de deudores. Sin borrado: se desactivan (`activo`)."""
+    permission_classes = [AreaTesoreria]
+    queryset = Deudor.objects.select_related('usuario')
+    serializer_class = DeudorSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        params = self.request.query_params
+        texto = (params.get('q') or '').strip()
+        if texto:
+            queryset = queryset.filter(nombre__icontains=texto)
+        if params.get('tipo'):
+            queryset = queryset.filter(tipo=params['tipo'])
+        activo = params.get('activo')
+        if activo is not None:
+            queryset = queryset.filter(activo=activo.lower() in ('1', 'true', 'si', 'sí'))
+        if params.get('con_deuda_abierta', '').lower() in ('1', 'true'):
+            queryset = queryset.filter(id__in=Deuda.objects.abiertas().values('deudor_id'))
+        return queryset
+
+    def get_serializer_context(self):
+        contexto = super().get_serializer_context()
+        if self.action == 'list':
+            contexto['abiertas_por_deudor'] = Counter(Deuda.objects.abiertas().values_list('deudor_id', flat=True))
+        return contexto
+
+    def _estado_cuenta(self, deudor):
+        return list(
+            Deuda.objects.con_saldo().filter(deudor=deudor)
+            .select_related('divisa').prefetch_related(_abonos_prefetch())
+            .order_by('fecha', 'creado')
+        )
+
+    @action(detail=True, methods=['get'], url_path='estado-cuenta/pdf')
+    def estado_cuenta_pdf(self, request, pk=None):
+        deudor = self.get_object()
+        buffer = construir_pdf_estado_cuenta(deudor, self._estado_cuenta(deudor))
+        response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="estado_cuenta_{deudor.id}.pdf"'
+        return response
+
+    @action(detail=True, methods=['get'], url_path='estado-cuenta/excel')
+    def estado_cuenta_excel(self, request, pk=None):
+        deudor = self.get_object()
+        libro = construir_excel_estado_cuenta(deudor, self._estado_cuenta(deudor))
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = f'attachment; filename="estado_cuenta_{deudor.id}.xlsx"'
+        libro.save(response)
+        return response
+
+
+class DeudaViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Deudas con su saldo calculado y su historial de abonos. Sin borrado: se cancelan."""
+    permission_classes = [AreaTesoreria]
+    serializer_class = DeudaSerializer
+
+    def get_queryset(self):
+        queryset = (
+            Deuda.objects.con_saldo()
+            .select_related('deudor', 'divisa', 'usuario', 'editado_por', 'usuario_cancelacion')
+            .prefetch_related(_abonos_prefetch())
+        )
+        params = self.request.query_params
+        if params.get('deudor'):
+            queryset = queryset.filter(deudor_id=params['deudor'])
+        if params.get('divisa'):
+            queryset = queryset.filter(divisa_id=params['divisa'])
+        texto = (params.get('q') or '').strip()
+        if texto:
+            queryset = queryset.filter(Q(deudor__nombre__icontains=texto) | Q(concepto__icontains=texto))
+        estado = params.get('estado')
+        if estado == Deuda.ABIERTA:
+            queryset = queryset.filter(cancelada=False, saldo__gt=0)
+        elif estado == Deuda.PAGADA:
+            queryset = queryset.filter(cancelada=False, saldo__lte=0)
+        elif estado == Deuda.CANCELADA:
+            queryset = queryset.filter(cancelada=True)
+        return queryset.order_by('-fecha', '-creado')
+
+    @action(detail=True, methods=['post'])
+    def cancelar(self, request, pk=None):
+        deuda = self.get_object()
+        try:
+            deuda.cancelar(usuario=request.user, motivo=request.data.get('motivo', ''))
+        except DjangoValidationError as exc:
+            return Response({'detail': _mensaje_de(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(self.get_serializer(self.get_object()).data)

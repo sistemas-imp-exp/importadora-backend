@@ -12,6 +12,8 @@ from .models import (
     Banco,
     ConfiguracionFolio,
     Denominacion,
+    Deuda,
+    Deudor,
     Divisa,
     Empleado,
     MovimientoArchivo,
@@ -100,6 +102,11 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
     editado_por = UsuarioResponsableSerializer(read_only=True)
     usuario_cancelacion = UsuarioResponsableSerializer(read_only=True)
     archivos_count = serializers.SerializerMethodField()
+    deuda = serializers.SerializerMethodField()
+    # Abono a deuda (opcional): solo ingresos, ver _validar_abono().
+    deuda_id = serializers.PrimaryKeyRelatedField(
+        source='deuda', queryset=Deuda.objects.all(), write_only=True, required=False, allow_null=True,
+    )
 
     class Meta:
         model = MovimientoTesoreria
@@ -108,7 +115,7 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
             'creado', 'modificado', 'divisas', 'usuario',
             'editado', 'editado_por', 'editado_en',
             'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
-            'archivos_count',
+            'archivos_count', 'deuda', 'deuda_id',
         ]
         read_only_fields = [
             'id', 'creado', 'modificado', 'archivos_count', 'usuario', 'editado', 'editado_por', 'editado_en',
@@ -117,6 +124,16 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
 
     def get_archivos_count(self, obj):
         return obj.archivos.filter(eliminado=False).count()
+
+    def get_deuda(self, obj):
+        if obj.deuda_id is None:
+            return None
+        deuda = obj.deuda
+        return {
+            'id': deuda.id,
+            'concepto': deuda.concepto,
+            'deudor': {'id': deuda.deudor_id, 'nombre': deuda.deudor.nombre},
+        }
 
     def validate_folio(self, value):
         consulta = MovimientoTesoreria.objects.filter(folio=value)
@@ -135,13 +152,43 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'divisas': 'Las cantidades deben ser mayores que cero.'})
         return data
 
+    def _validar_abono(self, validated_data, instance=None):
+        """
+        Un abono a deuda es un ingreso en una sola divisa, la de la deuda, por
+        no más del saldo pendiente. Se llama dentro de la transacción y con la
+        deuda bloqueada, para que dos abonos simultáneos no pasen del saldo.
+        """
+        deuda = validated_data.get('deuda', instance.deuda if instance else None)
+        if deuda is None:
+            return
+        deuda = Deuda.objects.select_for_update().get(pk=deuda.pk)
+        tipo = validated_data.get('tipo', instance.tipo if instance else None)
+        fecha = validated_data.get('fecha', instance.fecha if instance else None)
+        divisas = validated_data['divisas']
+        if tipo != MovimientoTesoreria.INGRESO:
+            raise serializers.ValidationError({'deuda_id': 'Solo un ingreso puede abonar a una deuda.'})
+        if deuda.cancelada:
+            raise serializers.ValidationError({'deuda_id': 'La deuda está cancelada.'})
+        if len(divisas) != 1 or divisas[0]['divisa'].id != deuda.divisa_id:
+            raise serializers.ValidationError(
+                {'divisas': f'El abono debe ser en una sola divisa: {deuda.divisa.codigo}, la de la deuda.'}
+            )
+        if fecha and fecha < deuda.fecha:
+            raise serializers.ValidationError({'fecha': 'El abono no puede ser anterior a la fecha de la deuda.'})
+        pendiente = deuda.monto - deuda.calcular_abonado(excluir_movimiento=instance)
+        if divisas[0]['cantidad'] > pendiente:
+            raise serializers.ValidationError(
+                {'divisas': f'El abono excede el saldo pendiente de la deuda ({deuda.divisa.simbolo}{pendiente:,.2f}).'}
+            )
+
     # Sin validación de saldo suficiente: al pasar hojas atrasadas es normal
     # capturar un egreso antes que el ingreso del mismo día. Los días que
     # quedan en negativo los marca la Caja diaria (treasury/saldos.py).
     def create(self, validated_data):
-        divisas_data = validated_data.pop('divisas')
         validated_data['usuario'] = _usuario_sesion(self)
         with transaction.atomic():
+            self._validar_abono(validated_data)
+            divisas_data = validated_data.pop('divisas')
             movimiento = MovimientoTesoreria.objects.create(**validated_data)
             for item in divisas_data:
                 MovimientoDivisa.objects.create(movimiento=movimiento, divisa=item['divisa'], cantidad=item['cantidad'])
@@ -152,15 +199,16 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
         if instance.cancelado:
             raise serializers.ValidationError('No se puede editar un movimiento cancelado.')
 
-        divisas_data = validated_data.pop('divisas')
-        hubo_cambio = False
-        for campo in ['fecha', 'folio', 'tipo', 'autorizo', 'beneficiario', 'concepto']:
-            if campo in validated_data:
-                if getattr(instance, campo) != validated_data[campo]:
-                    hubo_cambio = True
-                setattr(instance, campo, validated_data[campo])
-
         with transaction.atomic():
+            self._validar_abono(validated_data, instance)
+            divisas_data = validated_data.pop('divisas')
+            hubo_cambio = False
+            for campo in ['fecha', 'folio', 'tipo', 'autorizo', 'beneficiario', 'concepto', 'deuda']:
+                if campo in validated_data:
+                    if getattr(instance, campo) != validated_data[campo]:
+                        hubo_cambio = True
+                    setattr(instance, campo, validated_data[campo])
+
             lineas_actuales = {linea.divisa_id: linea for linea in instance.divisas.all()}
             ids_nuevos = set()
             for item in divisas_data:
@@ -516,3 +564,125 @@ class NominaSemanalSerializer(serializers.ModelSerializer):
 
         return instance
 
+
+
+class DeudorSerializer(serializers.ModelSerializer):
+    usuario = UsuarioResponsableSerializer(read_only=True)
+    deudas_abiertas = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Deudor
+        fields = ['id', 'nombre', 'tipo', 'telefono', 'notas', 'activo', 'usuario', 'creado', 'deudas_abiertas']
+        read_only_fields = ['id', 'usuario', 'creado', 'deudas_abiertas']
+
+    def get_deudas_abiertas(self, obj):
+        abiertas = self.context.get('abiertas_por_deudor')
+        if abiertas is None:
+            return Deuda.objects.abiertas().filter(deudor=obj).count()
+        return abiertas.get(obj.id, 0)
+
+    def validate_nombre(self, value):
+        value = ' '.join(value.split())
+        if not value:
+            raise serializers.ValidationError('El nombre es obligatorio.')
+        return value
+
+    def create(self, validated_data):
+        validated_data['usuario'] = _usuario_sesion(self)
+        return super().create(validated_data)
+
+
+class AbonoSerializer(serializers.ModelSerializer):
+    """Un abono es el ingreso de caja ligado a la deuda (una sola divisa)."""
+    cantidad = serializers.SerializerMethodField()
+    usuario = UsuarioResponsableSerializer(read_only=True)
+    usuario_cancelacion = UsuarioResponsableSerializer(read_only=True)
+
+    class Meta:
+        model = MovimientoTesoreria
+        fields = [
+            'id', 'folio', 'fecha', 'concepto', 'cantidad', 'usuario', 'creado',
+            'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
+        ]
+
+    def get_cantidad(self, obj):
+        return str(sum((linea.cantidad for linea in obj.divisas.all()), Decimal('0')))
+
+
+class DeudaSerializer(serializers.ModelSerializer):
+    deudor = serializers.SerializerMethodField()
+    deudor_id = serializers.PrimaryKeyRelatedField(source='deudor', queryset=Deudor.objects.all(), write_only=True)
+    divisa = DivisaSerializer(read_only=True)
+    divisa_id = serializers.PrimaryKeyRelatedField(
+        source='divisa', queryset=Divisa.objects.filter(activa=True), write_only=True,
+    )
+    monto = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=Decimal('0.01'))
+    abonado = serializers.SerializerMethodField()
+    saldo = serializers.SerializerMethodField()
+    estado = serializers.SerializerMethodField()
+    abonos = serializers.SerializerMethodField()
+    usuario = UsuarioResponsableSerializer(read_only=True)
+    editado_por = UsuarioResponsableSerializer(read_only=True)
+    usuario_cancelacion = UsuarioResponsableSerializer(read_only=True)
+
+    class Meta:
+        model = Deuda
+        fields = [
+            'id', 'deudor', 'deudor_id', 'concepto', 'divisa', 'divisa_id', 'monto', 'fecha', 'notas',
+            'abonado', 'saldo', 'estado', 'abonos',
+            'usuario', 'creado', 'editado_por', 'editado_en',
+            'cancelada', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
+        ]
+        read_only_fields = [
+            'id', 'usuario', 'creado', 'editado_por', 'editado_en',
+            'cancelada', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
+        ]
+
+    def get_deudor(self, obj):
+        return {'id': obj.deudor_id, 'nombre': obj.deudor.nombre, 'tipo': obj.deudor.tipo}
+
+    def _abonado(self, obj):
+        # Viene anotado por Deuda.objects.con_saldo(); si no, se calcula.
+        abonado = getattr(obj, 'abonado', None)
+        return obj.calcular_abonado() if abonado is None else abonado
+
+    def get_abonado(self, obj):
+        return str(self._abonado(obj).quantize(Decimal('0.01')))
+
+    def get_saldo(self, obj):
+        return str((obj.monto - self._abonado(obj)).quantize(Decimal('0.01')))
+
+    def get_estado(self, obj):
+        return Deuda.estado_de(obj.cancelada, obj.monto - self._abonado(obj))
+
+    def get_abonos(self, obj):
+        abonos = sorted(obj.abonos.all(), key=lambda m: (m.fecha, m.creado))
+        return AbonoSerializer(abonos, many=True).data
+
+    def validate_concepto(self, value):
+        value = ' '.join(value.split())
+        if not value:
+            raise serializers.ValidationError('El concepto es obligatorio.')
+        return value
+
+    def validate_fecha(self, value):
+        if value > timezone.localdate():
+            raise serializers.ValidationError('La fecha de la deuda no puede ser futura.')
+        return value
+
+    def create(self, validated_data):
+        validated_data['usuario'] = _usuario_sesion(self)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        # Con abonos de por medio el monto, la divisa o el deudor ya no se
+        # pueden cambiar sin descuadrar el historial: se cancelan los abonos primero.
+        if instance.cancelada:
+            raise serializers.ValidationError('No se puede editar una deuda cancelada.')
+        if instance.abonos_activos().exists():
+            raise serializers.ValidationError('La deuda tiene abonos: ya no se puede editar.')
+        hubo_cambio = any(getattr(instance, campo) != valor for campo, valor in validated_data.items())
+        if hubo_cambio:
+            instance.editado_por = _usuario_sesion(self)
+            instance.editado_en = timezone.now()
+        return super().update(instance, validated_data)

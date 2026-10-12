@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.core.validators import FileExtensionValidator
 from django.db import models
+from django.db.models import F, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from django.conf import settings # Importante para referenciar al modelo User
@@ -84,6 +86,16 @@ class MovimientoTesoreria(models.Model):
         blank=True,
     )
     motivo_cancelacion = models.TextField(blank=True)
+
+    # Un ingreso puede ser el abono a una deuda (ver Deuda); el historial de
+    # abonos son los ingresos que apuntan a ella.
+    deuda = models.ForeignKey(
+        'Deuda',
+        on_delete=models.PROTECT,
+        related_name='abonos',
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         ordering = ['-fecha', '-creado']
@@ -377,6 +389,143 @@ class ArqueoConteo(models.Model):
     def clean(self):
         if self.denominacion_id and self.arqueo_divisa_id and self.denominacion.divisa_id != self.arqueo_divisa.divisa_id:
             raise ValidationError('La denominación no corresponde a la divisa de este arqueo.')
+
+
+class Deudor(models.Model):
+    """Persona que le debe a la caja (trabajador o externo); catálogo propio de Tesorería."""
+    TRABAJADOR = 'T'
+    EXTERNO = 'E'
+    TIPO_CHOICES = (
+        (TRABAJADOR, 'Trabajador'),
+        (EXTERNO, 'Externo'),
+    )
+
+    nombre = models.CharField(max_length=200)
+    tipo = models.CharField(max_length=1, choices=TIPO_CHOICES)
+    telefono = models.CharField(max_length=30, blank=True)
+    notas = models.TextField(blank=True)
+    activo = models.BooleanField(default=True)
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='deudores_creados',
+    )
+    creado = models.DateTimeField(auto_now_add=True)
+    modificado = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['nombre']
+
+    def __str__(self):
+        return self.nombre
+
+
+class DeudaQuerySet(models.QuerySet):
+    def con_saldo(self):
+        """Anota `abonado` (ingresos no cancelados ligados a la deuda) y `saldo`."""
+        abonado = Coalesce(
+            Sum('abonos__divisas__cantidad', filter=Q(abonos__cancelado=False)),
+            Value(Decimal('0')),
+            output_field=models.DecimalField(max_digits=18, decimal_places=2),
+        )
+        return self.annotate(abonado=abonado).annotate(saldo=F('monto') - F('abonado'))
+
+    def abiertas(self):
+        return self.con_saldo().filter(cancelada=False, saldo__gt=0)
+
+    def pagadas(self):
+        return self.con_saldo().filter(cancelada=False, saldo__lte=0)
+
+
+class Deuda(models.Model):
+    """
+    Lo que un deudor le debe a la caja. No genera egreso: el dinero no salió
+    de caja. Se paga con abonos, que son ingresos de caja ligados a la deuda
+    (MovimientoTesoreria.deuda); el saldo y el estado se calculan con ellos.
+    """
+    ABIERTA = 'abierta'
+    PAGADA = 'pagada'
+    CANCELADA = 'cancelada'
+
+    deudor = models.ForeignKey(Deudor, on_delete=models.PROTECT, related_name='deudas')
+    concepto = models.CharField(max_length=255)
+    divisa = models.ForeignKey(Divisa, on_delete=models.PROTECT, related_name='deudas')
+    monto = models.DecimalField(max_digits=18, decimal_places=2)
+    fecha = models.DateField()
+    notas = models.TextField(blank=True)
+
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='deudas_creadas',
+    )
+    creado = models.DateTimeField(auto_now_add=True)
+    modificado = models.DateTimeField(auto_now=True)
+    editado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='deudas_editadas',
+        null=True,
+        blank=True,
+    )
+    editado_en = models.DateTimeField(null=True, blank=True)
+
+    cancelada = models.BooleanField(default=False)
+    fecha_cancelacion = models.DateTimeField(null=True, blank=True)
+    usuario_cancelacion = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='deudas_canceladas',
+        null=True,
+        blank=True,
+    )
+    motivo_cancelacion = models.TextField(blank=True)
+
+    objects = DeudaQuerySet.as_manager()
+
+    class Meta:
+        ordering = ['-fecha', '-creado']
+
+    def __str__(self):
+        return f"{self.deudor.nombre}: {self.concepto}"
+
+    def abonos_activos(self):
+        return self.abonos.filter(cancelado=False)
+
+    def calcular_abonado(self, excluir_movimiento=None):
+        abonos = MovimientoDivisa.objects.filter(movimiento__deuda=self, movimiento__cancelado=False)
+        if excluir_movimiento is not None:
+            abonos = abonos.exclude(movimiento=excluir_movimiento)
+        return abonos.aggregate(total=Sum('cantidad'))['total'] or Decimal('0')
+
+    @staticmethod
+    def estado_de(cancelada, saldo):
+        if cancelada:
+            return Deuda.CANCELADA
+        return Deuda.PAGADA if saldo <= 0 else Deuda.ABIERTA
+
+    def clean(self):
+        if self.monto is not None and self.monto <= 0:
+            raise ValidationError({'monto': 'El monto debe ser mayor que cero.'})
+        if self.fecha and self.fecha > timezone.localdate():
+            raise ValidationError({'fecha': 'La fecha de la deuda no puede ser futura.'})
+
+    def cancelar(self, usuario, motivo):
+        if self.cancelada:
+            raise ValidationError('Esta deuda ya está cancelada.')
+        if not motivo or not motivo.strip():
+            raise ValidationError('Debes indicar el motivo de la cancelación.')
+        if self.abonos_activos().exists():
+            raise ValidationError('La deuda tiene abonos activos: cancela primero esos ingresos.')
+        self.cancelada = True
+        self.usuario_cancelacion = usuario
+        self.motivo_cancelacion = motivo.strip()
+        self.fecha_cancelacion = timezone.now()
+        self.save()
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class TipoCambio(models.Model):
