@@ -144,3 +144,43 @@ class DeudasApiTests(APITestCase):
         self.assertEqual(self.client.get(f"/api/treasury/deudores/{self.deudor.id}/estado-cuenta/pdf/").status_code, 200)
         self.assertEqual(self._abonar("10").status_code, 403)
         self.assertEqual(self.client.post("/api/treasury/deudores/", {"nombre": "X", "tipo": "E"}).status_code, 403)
+
+
+class HistorialMovimientoTests(APITestCase):
+    def setUp(self):
+        self.usuario = crear_usuario_con_area("cajero", AREA_TESORERIA)
+        self.client.force_authenticate(user=self.usuario)
+        self.mxn = Divisa.objects.create(codigo="MXN", nombre="Peso", simbolo="$")
+        self.datos = {
+            "fecha": HOY.isoformat(), "folio": "10", "tipo": "E", "autorizo": "Jefe", "beneficiario": "CFE",
+            "concepto": "Pago luz", "divisas": [{"divisa_id": self.mxn.id, "cantidad": "500"}],
+        }
+        self.id = self.client.post("/api/treasury/movimientos/", self.datos, format="json").data["id"]
+
+    def _historial(self):
+        return self.client.get(f"/api/treasury/movimientos/{self.id}/historial/").data
+
+    def test_cada_edicion_guarda_que_cambio(self):
+        self.client.put(f"/api/treasury/movimientos/{self.id}/",
+                        {**self.datos, "concepto": "Pago agua", "divisas": [{"divisa_id": self.mxn.id, "cantidad": "650"}]},
+                        format="json")
+        self.client.put(f"/api/treasury/movimientos/{self.id}/",
+                        {**self.datos, "concepto": "Pago agua", "beneficiario": "CONAGUA",
+                         "divisas": [{"divisa_id": self.mxn.id, "cantidad": "650"}]}, format="json")
+        eventos = self._historial()
+        self.assertEqual([e["tipo"] for e in eventos], ["registro", "edicion", "edicion"])
+        self.assertEqual(eventos[1]["cambios"], [
+            {"campo": "Concepto", "antes": "Pago luz", "despues": "Pago agua"},
+            {"campo": "Cantidad MXN", "antes": "$500.00", "despues": "$650.00"},
+        ])
+        self.assertEqual(eventos[2]["cambios"], [{"campo": "Beneficiario", "antes": "CFE", "despues": "CONAGUA"}])
+        self.assertEqual(eventos[2]["usuario"]["username"], "cajero")
+
+    def test_guardar_sin_cambios_no_registra_edicion(self):
+        self.client.put(f"/api/treasury/movimientos/{self.id}/", self.datos, format="json")
+        self.assertEqual([e["tipo"] for e in self._historial()], ["registro"])
+
+    def test_cancelacion_en_la_linea_de_tiempo(self):
+        self.client.post(f"/api/treasury/movimientos/{self.id}/cancelar/", {"motivo": "Duplicado"}, format="json")
+        eventos = self._historial()
+        self.assertEqual((eventos[-1]["tipo"], eventos[-1]["motivo"]), ("cancelacion", "Duplicado"))

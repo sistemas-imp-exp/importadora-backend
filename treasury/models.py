@@ -195,6 +195,30 @@ class MovimientoDivisa(models.Model):
         super().save(*args, **kwargs)
 
 
+class EdicionMovimiento(models.Model):
+    """
+    Bitácora de ediciones de un movimiento: una fila por edición con la lista
+    de cambios [{campo, antes, despues}] en texto legible. Las ediciones
+    anteriores a esta bitácora quedan con `cambios` vacío (sin detalle).
+    """
+    movimiento = models.ForeignKey(MovimientoTesoreria, on_delete=models.CASCADE, related_name='ediciones')
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='ediciones_movimiento',
+        null=True,
+        blank=True,
+    )
+    fecha = models.DateTimeField(default=timezone.now)
+    cambios = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['fecha', 'id']
+
+    def __str__(self):
+        return f"Edición de {self.movimiento.folio} ({self.fecha:%d/%m/%Y %H:%M})"
+
+
 def ruta_adjunto_movimiento(instance, filename):
     return f"tesoreria/movimientos/{instance.movimiento_id}/{filename}"
 

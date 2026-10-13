@@ -15,6 +15,7 @@ from .models import (
     Deuda,
     Deudor,
     Divisa,
+    EdicionMovimiento,
     Empleado,
     MovimientoArchivo,
     MovimientoDivisa,
@@ -86,6 +87,50 @@ def _avanzar_folio(tipo, folio_valor):
     if numero >= config.siguiente_folio:
         config.siguiente_folio = numero + 1
         config.save()
+
+
+CAMPOS_HISTORIAL = (
+    ('fecha', 'Fecha'),
+    ('folio', 'Folio'),
+    ('tipo', 'Tipo'),
+    ('autorizo', 'Autorizó'),
+    ('beneficiario', 'Beneficiario'),
+    ('concepto', 'Concepto'),
+    ('deuda', 'Abono a deuda'),
+)
+
+
+def _foto_movimiento(movimiento, lineas):
+    """Valores legibles del movimiento para comparar antes y después de una edición."""
+    deuda = movimiento.deuda
+    foto = {
+        'fecha': movimiento.fecha.strftime('%d/%m/%Y'),
+        'folio': movimiento.folio,
+        'tipo': movimiento.get_tipo_display(),
+        'autorizo': movimiento.autorizo,
+        'beneficiario': movimiento.beneficiario,
+        'concepto': movimiento.concepto,
+        'deuda': f"{deuda.deudor.nombre}: {deuda.concepto}" if deuda else '',
+    }
+    cantidades = {linea.divisa.codigo: f"{linea.divisa.simbolo}{linea.cantidad:,.2f}" for linea in lineas}
+    return foto, cantidades
+
+
+def _diferencias(antes, despues):
+    (campos_antes, cantidades_antes), (campos_despues, cantidades_despues) = antes, despues
+    cambios = [
+        {'campo': etiqueta, 'antes': campos_antes[campo], 'despues': campos_despues[campo]}
+        for campo, etiqueta in CAMPOS_HISTORIAL
+        if campos_antes[campo] != campos_despues[campo]
+    ]
+    for codigo in sorted(set(cantidades_antes) | set(cantidades_despues)):
+        if cantidades_antes.get(codigo) != cantidades_despues.get(codigo):
+            cambios.append({
+                'campo': f'Cantidad {codigo}',
+                'antes': cantidades_antes.get(codigo, ''),
+                'despues': cantidades_despues.get(codigo, ''),
+            })
+    return cambios
 
 
 def _usuario_sesion(serializer):
@@ -201,6 +246,7 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             self._validar_abono(validated_data, instance)
+            antes = _foto_movimiento(instance, list(instance.divisas.select_related('divisa')))
             divisas_data = validated_data.pop('divisas')
             hubo_cambio = False
             for campo in ['fecha', 'folio', 'tipo', 'autorizo', 'beneficiario', 'concepto', 'deuda']:
@@ -233,6 +279,11 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
                 instance.editado_por = _usuario_sesion(self)
                 instance.editado_en = timezone.now()
             instance.save()
+            cambios = _diferencias(antes, _foto_movimiento(instance, list(instance.divisas.select_related('divisa'))))
+            if cambios:
+                EdicionMovimiento.objects.create(
+                    movimiento=instance, usuario=instance.editado_por, fecha=instance.editado_en, cambios=cambios,
+                )
             _avanzar_folio(instance.tipo, instance.folio)
         return instance
 

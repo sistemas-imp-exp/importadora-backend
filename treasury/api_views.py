@@ -21,6 +21,7 @@ from .models import (
     Deuda,
     Deudor,
     Divisa,
+    EdicionMovimiento,
     Empleado,
     MovimientoArchivo,
     NominaSemanal,
@@ -220,6 +221,38 @@ class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
         except DjangoValidationError as exc:
             return Response({'detail': _mensaje_de(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(self.get_serializer(movimiento).data)
+
+    @action(detail=True, methods=['get'])
+    def historial(self, request, pk=None):
+        """
+        Línea de tiempo del movimiento: registro, cada edición con lo que
+        cambió, cancelación y adjuntos subidos/quitados, en orden cronológico.
+        """
+        movimiento = self.get_object()
+        usuario = lambda u: UsuarioResponsableSerializer(u).data if u else None
+        eventos = [{'tipo': 'registro', 'fecha': movimiento.creado, 'usuario': usuario(movimiento.usuario)}]
+        for edicion in EdicionMovimiento.objects.filter(movimiento=movimiento).select_related('usuario'):
+            eventos.append({
+                'tipo': 'edicion', 'fecha': edicion.fecha, 'usuario': usuario(edicion.usuario),
+                'cambios': edicion.cambios,
+            })
+        for archivo in MovimientoArchivo.objects.filter(movimiento=movimiento).select_related('subido_por', 'eliminado_por'):
+            eventos.append({
+                'tipo': 'adjunto', 'fecha': archivo.subido_en, 'usuario': usuario(archivo.subido_por),
+                'archivo': archivo.nombre_original,
+            })
+            if archivo.eliminado and archivo.eliminado_en:
+                eventos.append({
+                    'tipo': 'adjunto_quitado', 'fecha': archivo.eliminado_en, 'usuario': usuario(archivo.eliminado_por),
+                    'archivo': archivo.nombre_original,
+                })
+        if movimiento.cancelado and movimiento.fecha_cancelacion:
+            eventos.append({
+                'tipo': 'cancelacion', 'fecha': movimiento.fecha_cancelacion,
+                'usuario': usuario(movimiento.usuario_cancelacion), 'motivo': movimiento.motivo_cancelacion,
+            })
+        eventos.sort(key=lambda e: e['fecha'])
+        return Response(eventos)
 
     @action(detail=False, methods=['get'])
     def siguiente_folio(self, request):
