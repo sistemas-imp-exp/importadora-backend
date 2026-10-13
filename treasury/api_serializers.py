@@ -168,7 +168,9 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
         ]
 
     def get_archivos_count(self, obj):
-        return obj.archivos.filter(eliminado=False).count()
+        # Anotado en la lista (una consulta para todos); si no, se cuenta aquí.
+        anotado = getattr(obj, 'num_archivos', None)
+        return obj.archivos.filter(eliminado=False).count() if anotado is None else anotado
 
     def get_deuda(self, obj):
         if obj.deuda_id is None:

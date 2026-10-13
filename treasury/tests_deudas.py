@@ -184,3 +184,32 @@ class HistorialMovimientoTests(APITestCase):
         self.client.post(f"/api/treasury/movimientos/{self.id}/cancelar/", {"motivo": "Duplicado"}, format="json")
         eventos = self._historial()
         self.assertEqual((eventos[-1]["tipo"], eventos[-1]["motivo"]), ("cancelacion", "Duplicado"))
+
+
+class ListadoMovimientosTests(APITestCase):
+    def setUp(self):
+        self.usuario = crear_usuario_con_area("cajero", AREA_TESORERIA)
+        self.client.force_authenticate(user=self.usuario)
+        self.mxn = Divisa.objects.create(codigo="MXN", nombre="Peso", simbolo="$")
+
+    def _crear(self, folio, fecha):
+        return self.client.post("/api/treasury/movimientos/", {
+            "fecha": fecha.isoformat(), "folio": folio, "tipo": "I", "autorizo": "J", "beneficiario": "B",
+            "concepto": "C", "divisas": [{"divisa_id": self.mxn.id, "cantidad": "10"}],
+        }, format="json")
+
+    def test_rango_son_los_extremos_de_los_registros(self):
+        self.assertEqual(self.client.get("/api/treasury/movimientos/rango/").data,
+                         {"desde": HOY.isoformat(), "hasta": HOY.isoformat()})
+        self._crear("1", HOY - timedelta(days=40))
+        self._crear("2", HOY - timedelta(days=3))
+        self.assertEqual(self.client.get("/api/treasury/movimientos/rango/").data,
+                         {"desde": (HOY - timedelta(days=40)).isoformat(), "hasta": (HOY - timedelta(days=3)).isoformat()})
+
+    def test_listado_por_rango_sin_una_consulta_por_movimiento(self):
+        for i in range(5):
+            self._crear(str(i), HOY - timedelta(days=i))
+        with self.assertNumQueries(4):  # permiso de área + lista + divisas (prefetch), sin importar cuántos
+            r = self.client.get("/api/treasury/movimientos/", {"desde": (HOY - timedelta(days=3)).isoformat(), "hasta": HOY.isoformat()})
+        self.assertEqual(len(r.data), 4)
+        self.assertEqual(r.data[0]["archivos_count"], 0)

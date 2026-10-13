@@ -4,7 +4,7 @@ from collections import Counter
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, Max, Min, Prefetch, Q
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -192,11 +192,22 @@ class CajaDiariaViewSet(viewsets.ViewSet):
 class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaTesoreria]
     queryset = (
-        MovimientoTesoreria.objects.select_related('deuda__deudor')
+        MovimientoTesoreria.objects.select_related('deuda__deudor', 'usuario', 'editado_por', 'usuario_cancelacion')
         .prefetch_related('divisas__divisa')
+        .annotate(num_archivos=Count('archivos', filter=Q(archivos__eliminado=False)))
         .order_by('-fecha', '-creado')
     )
     serializer_class = MovimientoTesoreriaSerializer
+
+    @action(detail=False, methods=['get'])
+    def rango(self, request):
+        """Primera y última fecha con movimientos (hoy si no hay): rango inicial del listado."""
+        extremos = MovimientoTesoreria.objects.aggregate(desde=Min('fecha'), hasta=Max('fecha'))
+        hoy = timezone.localdate()
+        return Response({
+            'desde': (extremos['desde'] or hoy).isoformat(),
+            'hasta': (extremos['hasta'] or hoy).isoformat(),
+        })
 
     def get_queryset(self):
         queryset = super().get_queryset()
