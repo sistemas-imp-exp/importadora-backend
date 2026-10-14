@@ -87,12 +87,12 @@ class MovimientoTesoreria(models.Model):
     )
     motivo_cancelacion = models.TextField(blank=True)
 
-    # Un ingreso puede ser el abono a una deuda (ver Deuda); el historial de
-    # abonos son los ingresos que apuntan a ella.
+    # Movimiento ligado a una deuda (ver Deuda): un egreso es un cargo (le
+    # prestaron dinero de caja) y un ingreso es un abono.
     deuda = models.ForeignKey(
         'Deuda',
         on_delete=models.PROTECT,
-        related_name='abonos',
+        related_name='movimientos',
         null=True,
         blank=True,
     )
@@ -123,6 +123,13 @@ class MovimientoTesoreria(models.Model):
             raise ValidationError('Este movimiento ya está cancelado.')
         if not motivo or not motivo.strip():
             raise ValidationError('Debes indicar el motivo de la cancelación.')
+        if self.deuda_id and self.tipo == self.EGRESO:
+            # Quitar un cargo no puede dejar la deuda con más abonado que debido.
+            cargado, abonado = self.deuda.calcular_totales(excluir_movimiento=self)
+            if self.deuda.monto_inicial + cargado - abonado < 0:
+                raise ValidationError(
+                    'No se puede cancelar: la deuda quedaría con más abonado que prestado. Cancela primero sus abonos.'
+                )
 
         self.cancelado = True
         self.usuario_cancelacion = usuario
@@ -446,13 +453,22 @@ class Deudor(models.Model):
 
 class DeudaQuerySet(models.QuerySet):
     def con_saldo(self):
-        """Anota `abonado` (ingresos no cancelados ligados a la deuda) y `saldo`."""
-        abonado = Coalesce(
-            Sum('abonos__divisas__cantidad', filter=Q(abonos__cancelado=False)),
-            Value(Decimal('0')),
-            output_field=models.DecimalField(max_digits=18, decimal_places=2),
+        """
+        Anota `cargado` (egresos ligados), `abonado` (ingresos ligados), `total`
+        (monto inicial + cargado) y `saldo` (total - abonado); sin cancelados.
+        """
+        def suma(tipo):
+            return Coalesce(
+                Sum('movimientos__divisas__cantidad',
+                    filter=Q(movimientos__cancelado=False, movimientos__tipo=tipo)),
+                Value(Decimal('0')),
+                output_field=models.DecimalField(max_digits=18, decimal_places=2),
+            )
+        return (
+            self.annotate(cargado=suma(MovimientoTesoreria.EGRESO), abonado=suma(MovimientoTesoreria.INGRESO))
+            .annotate(total=F('monto_inicial') + F('cargado'))
+            .annotate(saldo=F('total') - F('abonado'))
         )
-        return self.annotate(abonado=abonado).annotate(saldo=F('monto') - F('abonado'))
 
     def abiertas(self):
         return self.con_saldo().filter(cancelada=False, saldo__gt=0)
@@ -463,9 +479,12 @@ class DeudaQuerySet(models.QuerySet):
 
 class Deuda(models.Model):
     """
-    Lo que un deudor le debe a la caja. No genera egreso: el dinero no salió
-    de caja. Se paga con abonos, que son ingresos de caja ligados a la deuda
-    (MovimientoTesoreria.deuda); el saldo y el estado se calculan con ellos.
+    Lo que un deudor le debe a la caja, como cuenta corriente:
+      - monto_inicial: lo que debe sin que saliera dinero de caja (p. ej. una
+        venta a crédito); 0 si la deuda nació de un egreso;
+      - cargos: egresos de caja ligados (MovimientoTesoreria.deuda) que la aumentan;
+      - abonos: ingresos de caja ligados que la pagan.
+    Total, saldo y estado se calculan (DeudaQuerySet.con_saldo).
     """
     ABIERTA = 'abierta'
     PAGADA = 'pagada'
@@ -474,7 +493,10 @@ class Deuda(models.Model):
     deudor = models.ForeignKey(Deudor, on_delete=models.PROTECT, related_name='deudas')
     concepto = models.CharField(max_length=255)
     divisa = models.ForeignKey(Divisa, on_delete=models.PROTECT, related_name='deudas')
-    monto = models.DecimalField(max_digits=18, decimal_places=2)
+    monto_inicial = models.DecimalField(
+        max_digits=18, decimal_places=2, default=0,
+        help_text='Lo que se debe sin salida de caja; 0 si la deuda nació de un egreso.',
+    )
     fecha = models.DateField()
     notas = models.TextField(blank=True)
 
@@ -513,14 +535,19 @@ class Deuda(models.Model):
     def __str__(self):
         return f"{self.deudor.nombre}: {self.concepto}"
 
-    def abonos_activos(self):
-        return self.abonos.filter(cancelado=False)
+    def movimientos_activos(self):
+        return self.movimientos.filter(cancelado=False)
 
-    def calcular_abonado(self, excluir_movimiento=None):
-        abonos = MovimientoDivisa.objects.filter(movimiento__deuda=self, movimiento__cancelado=False)
-        if excluir_movimiento is not None:
-            abonos = abonos.exclude(movimiento=excluir_movimiento)
-        return abonos.aggregate(total=Sum('cantidad'))['total'] or Decimal('0')
+    def calcular_totales(self, excluir_movimiento=None):
+        """(cargado, abonado) con los movimientos no cancelados, opcionalmente sin uno."""
+        lineas = MovimientoDivisa.objects.filter(movimiento__deuda=self, movimiento__cancelado=False)
+        if excluir_movimiento is not None and excluir_movimiento.pk:
+            lineas = lineas.exclude(movimiento=excluir_movimiento)
+        totales = lineas.aggregate(
+            cargado=Sum('cantidad', filter=Q(movimiento__tipo=MovimientoTesoreria.EGRESO)),
+            abonado=Sum('cantidad', filter=Q(movimiento__tipo=MovimientoTesoreria.INGRESO)),
+        )
+        return totales['cargado'] or Decimal('0'), totales['abonado'] or Decimal('0')
 
     @staticmethod
     def estado_de(cancelada, saldo):
@@ -529,8 +556,8 @@ class Deuda(models.Model):
         return Deuda.PAGADA if saldo <= 0 else Deuda.ABIERTA
 
     def clean(self):
-        if self.monto is not None and self.monto <= 0:
-            raise ValidationError({'monto': 'El monto debe ser mayor que cero.'})
+        if self.monto_inicial is not None and self.monto_inicial < 0:
+            raise ValidationError({'monto_inicial': 'El monto inicial no puede ser negativo.'})
         if self.fecha and self.fecha > timezone.localdate():
             raise ValidationError({'fecha': 'La fecha de la deuda no puede ser futura.'})
 
@@ -539,8 +566,8 @@ class Deuda(models.Model):
             raise ValidationError('Esta deuda ya está cancelada.')
         if not motivo or not motivo.strip():
             raise ValidationError('Debes indicar el motivo de la cancelación.')
-        if self.abonos_activos().exists():
-            raise ValidationError('La deuda tiene abonos activos: cancela primero esos ingresos.')
+        if self.movimientos_activos().exists():
+            raise ValidationError('La deuda tiene cargos o abonos activos: cancela primero esos movimientos de caja.')
         self.cancelada = True
         self.usuario_cancelacion = usuario
         self.motivo_cancelacion = motivo.strip()

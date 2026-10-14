@@ -1,7 +1,8 @@
 """
-Estado de cuenta de un deudor: cada deuda con su monto, abonado, saldo y el
-historial de abonos (los ingresos de caja ligados a ella), y lo pendiente por
-divisa. Recibe las deudas anotadas con Deuda.objects.con_saldo().
+Estado de cuenta de un deudor: cada deuda con su monto inicial, cargos,
+total, abonado y saldo, el historial de cargos (egresos) y abonos (ingresos)
+de caja ligados a ella, y lo pendiente por divisa. Recibe las deudas
+anotadas con Deuda.objects.con_saldo().
 """
 from decimal import Decimal
 from io import BytesIO
@@ -17,7 +18,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from .models import Deuda
+from .models import Deuda, MovimientoTesoreria
 from .reportes import (
     COLOR_ENCABEZADO_RL,
     COLOR_FILA_CANCELADA,
@@ -35,12 +36,16 @@ def _estado(deuda):
     return Deuda.estado_de(deuda.cancelada, deuda.saldo)
 
 
-def _cantidad(abono):
-    return sum((linea.cantidad for linea in abono.divisas.all()), Decimal("0"))
+def _cantidad(movimiento):
+    return sum((linea.cantidad for linea in movimiento.divisas.all()), Decimal("0"))
 
 
-def _abonos(deuda):
-    return sorted(deuda.abonos.all(), key=lambda m: (m.fecha, m.creado))
+def _movimientos(deuda):
+    return sorted(deuda.movimientos.all(), key=lambda m: (m.fecha, m.creado))
+
+
+def _es_cargo(movimiento):
+    return movimiento.tipo == MovimientoTesoreria.EGRESO
 
 
 def pendiente_por_divisa(deudas):
@@ -132,34 +137,39 @@ def construir_pdf_estado_cuenta(deudor, deudas):
                 estilo_deuda,
             ),
             Paragraph(
-                f"Monto {_dinero(simbolo, deuda.monto)} · Abonado {_dinero(simbolo, deuda.abonado)} · "
+                (f"Monto inicial {_dinero(simbolo, deuda.monto_inicial)} · " if deuda.monto_inicial else "")
+                + (f"Cargos {_dinero(simbolo, deuda.cargado)} · " if deuda.cargado else "")
+                + f"Total {_dinero(simbolo, deuda.total)} · Abonado {_dinero(simbolo, deuda.abonado)} · "
                 f"<b>Saldo {_dinero(simbolo, deuda.saldo)}</b>",
                 estilo_deuda,
             ),
         ]
         if deuda.cancelada:
             bloque.append(Paragraph(f"Cancelada: {escape(deuda.motivo_cancelacion)}", estilo_nota))
-        abonos = _abonos(deuda)
-        if abonos:
-            filas = [["Folio", "Fecha", "Concepto", "Abono", "Estado"]]
-            for abono in abonos:
-                cancelado = abono.cancelado
+        movimientos = _movimientos(deuda)
+        if movimientos:
+            filas = [["Folio", "Fecha", "Tipo", "Concepto", "Cargo", "Abono", "Estado"]]
+            for mov in movimientos:
+                cancelado = mov.cancelado
+                importe = _dinero(simbolo, _cantidad(mov))
                 filas.append([
-                    _celda_detalle(abono.folio, TA_LEFT, cancelado),
-                    _celda_detalle(abono.fecha.strftime("%d/%m/%Y"), TA_CENTER, cancelado),
-                    _celda_detalle(abono.concepto, TA_LEFT, cancelado),
-                    _celda_detalle(_dinero(simbolo, _cantidad(abono)), TA_RIGHT, cancelado),
+                    _celda_detalle(mov.folio, TA_LEFT, cancelado),
+                    _celda_detalle(mov.fecha.strftime("%d/%m/%Y"), TA_CENTER, cancelado),
+                    _celda_detalle("Cargo" if _es_cargo(mov) else "Abono", TA_CENTER, cancelado),
+                    _celda_detalle(mov.concepto, TA_LEFT, cancelado),
+                    _celda_detalle(importe if _es_cargo(mov) else "", TA_RIGHT, cancelado),
+                    _celda_detalle("" if _es_cargo(mov) else importe, TA_RIGHT, cancelado),
                     _celda_detalle("Cancelado" if cancelado else "Activo", TA_CENTER, cancelado),
                 ])
-            tabla = Table(filas, colWidths=[2.2 * cm, 2.3 * cm, 7.6 * cm, 3 * cm, 2.2 * cm], repeatRows=1)
+            tabla = Table(filas, colWidths=[1.9 * cm, 2.1 * cm, 1.5 * cm, 5.6 * cm, 2.4 * cm, 2.4 * cm, 1.9 * cm], repeatRows=1)
             estilo = list(estilo_tabla)
-            for indice, abono in enumerate(abonos, start=1):
-                if abono.cancelado:
+            for indice, mov in enumerate(movimientos, start=1):
+                if mov.cancelado:
                     estilo.append(("BACKGROUND", (0, indice), (-1, indice), COLOR_FILA_CANCELADA_RL))
             tabla.setStyle(TableStyle(estilo))
             bloque.append(tabla)
         else:
-            bloque.append(Paragraph("Sin abonos.", estilo_nota))
+            bloque.append(Paragraph("Sin cargos ni abonos de caja.", estilo_nota))
         bloque.append(Spacer(1, 0.45 * cm))
         elementos.append(KeepTogether(bloque))
 
@@ -175,47 +185,50 @@ def construir_excel_estado_cuenta(deudor, deudas):
 
     ws = wb.active
     ws.title = "Deudas"
-    encabezados = ["Fecha", "Concepto", "Divisa", "Monto", "Abonado", "Saldo", "Estado", "Notas"]
+    encabezados = ["Fecha", "Concepto", "Divisa", "Monto inicial", "Cargos", "Total", "Abonado", "Saldo", "Estado", "Notas"]
     ws.append(encabezados)
     _estilizar_encabezado(ws, len(encabezados))
     for deuda in deudas:
         ws.append([
             deuda.fecha, deuda.concepto, deuda.divisa.codigo,
-            float(deuda.monto), float(deuda.abonado), float(deuda.saldo),
+            float(deuda.monto_inicial), float(deuda.cargado), float(deuda.total), float(deuda.abonado), float(deuda.saldo),
             ESTADOS[_estado(deuda)], deuda.motivo_cancelacion if deuda.cancelada else deuda.notas,
         ])
         fila = ws.max_row
         ws.cell(row=fila, column=1).number_format = "DD/MM/YYYY"
-        for col in (4, 5, 6):
+        for col in (4, 5, 6, 7, 8):
             ws.cell(row=fila, column=col).number_format = "#,##0.00"
         if deuda.cancelada:
             for col in range(1, len(encabezados) + 1):
                 ws.cell(row=fila, column=col).font = font_cancelado
                 ws.cell(row=fila, column=col).fill = fill_cancelado
-    for col, ancho in zip("ABCDEFGH", (12, 36, 8, 14, 14, 14, 11, 36)):
+    for col, ancho in zip("ABCDEFGHIJ", (12, 36, 8, 14, 14, 14, 14, 14, 11, 36)):
         ws.column_dimensions[col].width = ancho
     ws.freeze_panes = "A2"
 
-    ws_abonos = wb.create_sheet("Abonos")
-    encabezados = ["Deuda", "Divisa", "Folio", "Fecha", "Concepto", "Abono", "Estado", "Motivo cancelación"]
-    ws_abonos.append(encabezados)
-    _estilizar_encabezado(ws_abonos, len(encabezados))
+    ws_movs = wb.create_sheet("Cargos y abonos")
+    encabezados = ["Deuda", "Divisa", "Folio", "Fecha", "Tipo", "Concepto", "Cargo", "Abono", "Estado", "Motivo cancelación"]
+    ws_movs.append(encabezados)
+    _estilizar_encabezado(ws_movs, len(encabezados))
     for deuda in deudas:
-        for abono in _abonos(deuda):
-            ws_abonos.append([
-                deuda.concepto, deuda.divisa.codigo, abono.folio, abono.fecha, abono.concepto,
-                float(_cantidad(abono)), "Cancelado" if abono.cancelado else "Activo", abono.motivo_cancelacion,
+        for mov in _movimientos(deuda):
+            cargo = _es_cargo(mov)
+            ws_movs.append([
+                deuda.concepto, deuda.divisa.codigo, mov.folio, mov.fecha, "Cargo" if cargo else "Abono", mov.concepto,
+                float(_cantidad(mov)) if cargo else None, None if cargo else float(_cantidad(mov)),
+                "Cancelado" if mov.cancelado else "Activo", mov.motivo_cancelacion,
             ])
-            fila = ws_abonos.max_row
-            ws_abonos.cell(row=fila, column=4).number_format = "DD/MM/YYYY"
-            ws_abonos.cell(row=fila, column=6).number_format = "#,##0.00"
-            if abono.cancelado:
+            fila = ws_movs.max_row
+            ws_movs.cell(row=fila, column=4).number_format = "DD/MM/YYYY"
+            for col in (7, 8):
+                ws_movs.cell(row=fila, column=col).number_format = "#,##0.00"
+            if mov.cancelado:
                 for col in range(1, len(encabezados) + 1):
-                    ws_abonos.cell(row=fila, column=col).font = font_cancelado
-                    ws_abonos.cell(row=fila, column=col).fill = fill_cancelado
-    for col, ancho in zip("ABCDEFGH", (30, 8, 12, 12, 32, 14, 11, 30)):
-        ws_abonos.column_dimensions[col].width = ancho
-    ws_abonos.freeze_panes = "A2"
+                    ws_movs.cell(row=fila, column=col).font = font_cancelado
+                    ws_movs.cell(row=fila, column=col).fill = fill_cancelado
+    for col, ancho in zip("ABCDEFGHIJ", (30, 8, 12, 12, 8, 32, 14, 14, 11, 30)):
+        ws_movs.column_dimensions[col].width = ancho
+    ws_movs.freeze_panes = "A2"
 
     ws_resumen = wb.create_sheet("Pendiente por divisa")
     ws_resumen.append(["Deudor", deudor.nombre])

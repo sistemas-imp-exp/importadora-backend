@@ -21,7 +21,7 @@ class DeudasApiTests(APITestCase):
         self.usd = Divisa.objects.create(codigo="USD", nombre="Dólar", simbolo="US$")
         self.deudor = Deudor.objects.create(nombre="Juan Pérez", tipo=Deudor.TRABAJADOR, usuario=self.usuario)
         self.deuda = Deuda.objects.create(
-            deudor=self.deudor, concepto="Venta de camarón", divisa=self.mxn, monto=Decimal("1000"),
+            deudor=self.deudor, concepto="Venta de camarón", divisa=self.mxn, monto_inicial=Decimal("1000"),
             fecha=HOY - timedelta(days=5), usuario=self.usuario,
         )
         self.folio = 0
@@ -44,7 +44,7 @@ class DeudasApiTests(APITestCase):
         self.assertEqual(r.data["nombre"], "Pesca Sur")
         r = self.client.post("/api/treasury/deudas/", {
             "deudor_id": r.data["id"], "concepto": "Venta de pulpo", "divisa_id": self.usd.id,
-            "monto": "500", "fecha": HOY.isoformat(),
+            "monto_inicial": "500", "fecha": HOY.isoformat(),
         }, format="json")
         self.assertEqual(r.status_code, 201, r.data)
         self.assertEqual(r.data["usuario"]["username"], "cajero")
@@ -59,7 +59,7 @@ class DeudasApiTests(APITestCase):
         self.assertEqual(r.data["deuda"]["deudor"]["nombre"], "Juan Pérez")
         deuda = self._deuda()
         self.assertEqual((deuda["abonado"], deuda["saldo"], deuda["estado"]), ("300.00", "700.00", "abierta"))
-        self.assertEqual([a["folio"] for a in deuda["abonos"]], ["A-1"])
+        self.assertEqual([a["folio"] for a in deuda["movimientos"]], ["A-1"])
         self.assertEqual(saldos_al(HOY)[self.mxn.id], Decimal("300"))
 
     def test_abonar_el_saldo_completo_la_marca_pagada(self):
@@ -76,7 +76,6 @@ class DeudasApiTests(APITestCase):
         self.assertIn("saldo pendiente", str(r.data["divisas"]))
 
     def test_validaciones_del_abono(self):
-        self.assertIn("ingreso", str(self._abonar("10", tipo="E").data))
         r = self._abonar("10", divisas=[{"divisa_id": self.usd.id, "cantidad": "10"}])
         self.assertIn("MXN", str(r.data["divisas"]))
         r = self._abonar("10", divisas=[
@@ -92,7 +91,7 @@ class DeudasApiTests(APITestCase):
         self.client.post(f"/api/treasury/movimientos/{movimiento_id}/cancelar/", {"motivo": "Error"}, format="json")
         deuda = self._deuda()
         self.assertEqual((deuda["saldo"], deuda["estado"]), ("1000.00", "abierta"))
-        self.assertTrue(deuda["abonos"][0]["cancelado"])
+        self.assertTrue(deuda["movimientos"][0]["cancelado"])
 
     def test_editar_el_ingreso_valida_el_saldo_sin_contarse_a_si_mismo(self):
         r = self._abonar("1000")
@@ -106,11 +105,13 @@ class DeudasApiTests(APITestCase):
 
     def test_deuda_con_abonos_no_se_edita_ni_se_cancela(self):
         datos = {"deudor_id": self.deudor.id, "concepto": "Otro", "divisa_id": self.mxn.id,
-                 "monto": "2000", "fecha": HOY.isoformat()}
+                 "monto_inicial": "2000", "fecha": HOY.isoformat()}
         r = self.client.put(f"/api/treasury/deudas/{self.deuda.id}/", datos, format="json")
         self.assertEqual(r.status_code, 200, r.data)
         self.assertEqual(r.data["editado_por"]["username"], "cajero")
         self._abonar("10")
+        # Con abonos ya no cambian deudor, divisa, monto inicial ni fecha.
+        datos["monto_inicial"] = "2500"
         self.assertEqual(self.client.put(f"/api/treasury/deudas/{self.deuda.id}/", datos, format="json").status_code, 400)
         r = self.client.post(f"/api/treasury/deudas/{self.deuda.id}/cancelar/", {"motivo": "x"}, format="json")
         self.assertEqual(r.status_code, 400)
@@ -213,3 +214,98 @@ class ListadoMovimientosTests(APITestCase):
             r = self.client.get("/api/treasury/movimientos/", {"desde": (HOY - timedelta(days=3)).isoformat(), "hasta": HOY.isoformat()})
         self.assertEqual(len(r.data), 4)
         self.assertEqual(r.data[0]["archivos_count"], 0)
+
+
+class CargosDeudaTests(APITestCase):
+    """Un egreso ligado a una deuda es un cargo: sale de caja y aumenta lo que se debe."""
+
+    def setUp(self):
+        self.usuario = crear_usuario_con_area("cajero", AREA_TESORERIA)
+        self.client.force_authenticate(user=self.usuario)
+        self.mxn = Divisa.objects.create(codigo="MXN", nombre="Peso", simbolo="$")
+        self.usd = Divisa.objects.create(codigo="USD", nombre="Dólar", simbolo="US$")
+        self.deudor = Deudor.objects.create(nombre="Juan Pérez", tipo=Deudor.TRABAJADOR, usuario=self.usuario)
+        self.folio = 0
+
+    def _mov(self, tipo, cantidad, divisa=None, **extra):
+        self.folio += 1
+        return self.client.post("/api/treasury/movimientos/", {
+            "fecha": HOY.isoformat(), "folio": f"M-{self.folio}", "tipo": tipo, "autorizo": "Jefe",
+            "beneficiario": "Juan Pérez", "concepto": "Préstamo",
+            "divisas": [{"divisa_id": (divisa or self.mxn).id, "cantidad": cantidad}], **extra,
+        }, format="json")
+
+    def _deuda(self, deuda_id):
+        return self.client.get(f"/api/treasury/deudas/{deuda_id}/").data
+
+    def _nueva(self, cantidad="1000"):
+        r = self._mov("E", cantidad, nueva_deuda={"deudor_id": self.deudor.id, "concepto": "Préstamo personal"})
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data["deuda"]["id"]
+
+    def test_egreso_con_nueva_deuda_sale_de_caja_y_crea_la_deuda(self):
+        deuda = self._deuda(self._nueva("1000"))
+        self.assertEqual((deuda["monto_inicial"], deuda["cargado"], deuda["total"], deuda["saldo"], deuda["estado"]),
+                         ("0.00", "1000.00", "1000.00", "1000.00", "abierta"))
+        self.assertEqual(deuda["divisa"]["codigo"], "MXN")
+        self.assertEqual(deuda["movimientos"][0]["tipo"], "E")
+        self.assertEqual(saldos_al(HOY)[self.mxn.id], Decimal("-1000"))
+
+    def test_otro_egreso_aumenta_la_deuda_y_el_abono_tiene_tope_en_el_total(self):
+        deuda_id = self._nueva("1000")
+        self.assertEqual(self._mov("E", "500", deuda_id=deuda_id).status_code, 201)
+        self.assertEqual(self._deuda(deuda_id)["total"], "1500.00")
+        self.assertEqual(self._mov("I", "1500.01", deuda_id=deuda_id).status_code, 400)
+        self.assertEqual(self._mov("I", "1500", deuda_id=deuda_id).status_code, 201)
+        self.assertEqual(self._deuda(deuda_id)["estado"], "pagada")
+        # Un cargo nuevo la vuelve a abrir.
+        self._mov("E", "200", deuda_id=deuda_id)
+        self.assertEqual((self._deuda(deuda_id)["saldo"], self._deuda(deuda_id)["estado"]), ("200.00", "abierta"))
+
+    def test_deuda_capturada_a_mano_mas_cargos(self):
+        deuda = Deuda.objects.create(deudor=self.deudor, concepto="Venta a crédito", divisa=self.mxn,
+                                     monto_inicial=Decimal("300"), fecha=HOY, usuario=self.usuario)
+        self._mov("E", "700", deuda_id=deuda.id)
+        datos = self._deuda(deuda.id)
+        self.assertEqual((datos["monto_inicial"], datos["cargado"], datos["total"]), ("300.00", "700.00", "1000.00"))
+
+    def test_el_cargo_va_en_la_divisa_de_la_deuda_y_solo_un_egreso_crea_deuda(self):
+        deuda_id = self._nueva()
+        self.assertIn("MXN", str(self._mov("E", "10", divisa=self.usd, deuda_id=deuda_id).data))
+        r = self._mov("I", "10", nueva_deuda={"deudor_id": self.deudor.id, "concepto": "X"})
+        self.assertIn("egreso", str(r.data))
+        self.assertEqual(Deuda.objects.count(), 1)
+
+    def test_no_se_cancela_un_cargo_si_los_abonos_lo_superan(self):
+        deuda_id = self._nueva("1000")
+        cargo = Deuda.objects.get(pk=deuda_id).movimientos.get()
+        self._mov("I", "400", deuda_id=deuda_id)
+        r = self.client.post(f"/api/treasury/movimientos/{cargo.id}/cancelar/", {"motivo": "x"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("abonado", r.data["detail"])
+
+    def test_reducir_un_cargo_por_debajo_de_lo_abonado_no_se_permite(self):
+        deuda_id = self._nueva("1000")
+        cargo = Deuda.objects.get(pk=deuda_id).movimientos.get()
+        self._mov("I", "600", deuda_id=deuda_id)
+        datos = {"fecha": HOY.isoformat(), "folio": cargo.folio, "tipo": "E", "autorizo": "Jefe", "beneficiario": "J",
+                 "concepto": "Préstamo", "deuda_id": deuda_id, "divisas": [{"divisa_id": self.mxn.id, "cantidad": "500"}]}
+        self.assertEqual(self.client.put(f"/api/treasury/movimientos/{cargo.id}/", datos, format="json").status_code, 400)
+        datos["divisas"][0]["cantidad"] = "600"
+        self.assertEqual(self.client.put(f"/api/treasury/movimientos/{cargo.id}/", datos, format="json").status_code, 200)
+
+    def test_desde_deudas_se_exige_monto_inicial_y_con_movimientos_solo_concepto_y_notas(self):
+        r = self.client.post("/api/treasury/deudas/", {"deudor_id": self.deudor.id, "concepto": "X", "divisa_id": self.mxn.id,
+                                                        "monto_inicial": "0", "fecha": HOY.isoformat()}, format="json")
+        self.assertEqual(r.status_code, 400)
+        deuda_id = self._nueva("1000")
+        base = {"deudor_id": self.deudor.id, "divisa_id": self.mxn.id, "monto_inicial": "0", "fecha": HOY.isoformat()}
+        r = self.client.put(f"/api/treasury/deudas/{deuda_id}/", {**base, "concepto": "Préstamo para moto"}, format="json")
+        self.assertEqual((r.status_code, r.data["concepto"]), (200, "Préstamo para moto"))
+        r = self.client.put(f"/api/treasury/deudas/{deuda_id}/", {**base, "concepto": "Y", "monto_inicial": "50"}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_un_movimiento_ligado_no_se_elimina(self):
+        deuda_id = self._nueva()
+        cargo = Deuda.objects.get(pk=deuda_id).movimientos.get()
+        self.assertEqual(self.client.delete(f"/api/treasury/movimientos/{cargo.id}/").status_code, 400)

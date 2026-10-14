@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import mixins, viewsets, status
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from security.permissions import AreaTesoreria
@@ -223,6 +224,11 @@ class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(fecha__lte=hasta)
         return queryset
 
+    def perform_destroy(self, instance):
+        if instance.deuda_id:
+            raise DRFValidationError('Está ligado a una deuda: cancélalo en lugar de eliminarlo.')
+        instance.delete()
+
     @action(detail=True, methods=['post'])
     def cancelar(self, request, pk=None):
         movimiento = self.get_object()
@@ -407,9 +413,9 @@ class MovimientoArchivoViewSet(
         return queryset
 
 
-def _abonos_prefetch():
+def _movimientos_deuda_prefetch():
     return Prefetch(
-        'abonos',
+        'movimientos',
         queryset=MovimientoTesoreria.objects.select_related('usuario', 'usuario_cancelacion').prefetch_related('divisas'),
     )
 
@@ -450,7 +456,7 @@ class DeudorViewSet(
     def _estado_cuenta(self, deudor):
         return list(
             Deuda.objects.con_saldo().filter(deudor=deudor)
-            .select_related('divisa').prefetch_related(_abonos_prefetch())
+            .select_related('divisa').prefetch_related(_movimientos_deuda_prefetch())
             .order_by('fecha', 'creado')
         )
 
@@ -479,7 +485,7 @@ class DeudaViewSet(
     mixins.UpdateModelMixin,
     viewsets.GenericViewSet,
 ):
-    """Deudas con su saldo calculado y su historial de abonos. Sin borrado: se cancelan."""
+    """Deudas con su saldo calculado y su historial de cargos y abonos. Sin borrado: se cancelan."""
     permission_classes = [AreaTesoreria]
     serializer_class = DeudaSerializer
 
@@ -487,7 +493,7 @@ class DeudaViewSet(
         queryset = (
             Deuda.objects.con_saldo()
             .select_related('deudor', 'divisa', 'usuario', 'editado_por', 'usuario_cancelacion')
-            .prefetch_related(_abonos_prefetch())
+            .prefetch_related(_movimientos_deuda_prefetch())
         )
         params = self.request.query_params
         if params.get('deudor'):
