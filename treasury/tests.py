@@ -751,3 +751,21 @@ class NominaSemanalApiTests(APITestCase):
             f'/api/treasury/nominas/{nomina_id}/', self._payload(), format='json'
         )
         self.assertEqual(respuesta_edicion.status_code, 400)
+
+
+class ReporteNominaApiTests(APITestCase):
+    def test_la_vista_previa_trae_todas_las_lineas_no_solo_las_primeras(self):
+        usuario = crear_usuario_con_area('nominas', AREA_TESORERIA)
+        self.client.force_authenticate(user=usuario)
+        rancho = Rancho.objects.create(nombre='Rancho 1')
+        puesto = Puesto.objects.create(nombre='Peón')
+        nomina = NominaSemanal.objects.create(fecha_inicio=HOY - timedelta(days=6), fecha_fin=HOY, creado_por=usuario)
+        for i in range(25):
+            empleado = Empleado.objects.create(rancho=rancho, puesto=puesto, nombre=f'Empleado {i:02d}', salario_diario=Decimal('300'))
+            NominaDetalle.objects.create(nomina=nomina, empleado=empleado, dias_trabajados=Decimal('6'), salario_diario=Decimal('300'))
+        respuesta = self.client.get('/api/treasury/reportes/nomina/', {
+            'fecha_inicio': (HOY - timedelta(days=6)).isoformat(), 'fecha_fin': HOY.isoformat(),
+        })
+        self.assertEqual(respuesta.status_code, 200, respuesta.data)
+        self.assertEqual((respuesta.data['total'], len(respuesta.data['muestra'])), (25, 25))
+        self.assertFalse(respuesta.data['muestra_limitada'])

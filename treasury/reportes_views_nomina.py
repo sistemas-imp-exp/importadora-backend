@@ -10,7 +10,6 @@ from rest_framework.response import Response
 from security.permissions import AreaTesoreria
 
 from .reportes_nomina import (
-    PREVIEW_LIMIT,
     calcular_resumen_por_banco,
     calcular_resumen_por_rancho,
     construir_libro_excel_nomina,
@@ -101,15 +100,16 @@ def resumen_nomina(request):
     except ValidationError as exc:
         return Response({"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
 
-    total = detalles.count()
+    # Todas las líneas que coinciden (la pantalla las pagina); la consulta ya
+    # trae nómina, empleado, rancho, puesto y banco en el mismo join.
     resumen = calcular_resumen_por_rancho(detalles)
     resumen_banco = calcular_resumen_por_banco(detalles)
-    muestra = [_serializar_detalle(detalle) for detalle in detalles[:PREVIEW_LIMIT]]
+    muestra = [_serializar_detalle(detalle) for detalle in detalles]
 
     return Response({
-        "total": total,
+        "total": len(muestra),
         "muestra": muestra,
-        "muestra_limitada": total > PREVIEW_LIMIT,
+        "muestra_limitada": False,
         "resumen": _serializar_resumen(resumen),
         "resumen_banco": _serializar_resumen_banco(resumen_banco),
     })
