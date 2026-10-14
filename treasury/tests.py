@@ -379,6 +379,17 @@ class ReporteMovimientosApiTests(APITestCase):
         })
         self.assertEqual(respuesta.data['total'], 2)
 
+    def test_la_vista_previa_trae_todas_las_lineas_no_solo_las_primeras(self):
+        for i in range(25):
+            crear_movimiento(self.dia1, 'I', self.mxn, '1', self.usuario, f'MUCHAS-{i}')
+        respuesta = self.client.get('/api/treasury/reportes/movimientos/', {
+            'fecha_inicio': self.dia1.isoformat(),
+            'fecha_fin': self.dia1.isoformat(),
+        })
+        self.assertEqual(respuesta.data['total'], 27)
+        self.assertEqual(len(respuesta.data['muestra']), 27)
+        self.assertFalse(respuesta.data['muestra_limitada'])
+
     def test_filtro_por_beneficiario(self):
         respuesta = self.client.get('/api/treasury/reportes/movimientos/', {
             'fecha_inicio': self.dia1.isoformat(),

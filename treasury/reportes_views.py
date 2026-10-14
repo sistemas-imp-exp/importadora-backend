@@ -10,7 +10,6 @@ from rest_framework.response import Response
 from security.permissions import AreaTesoreria
 
 from .reportes import (
-    PREVIEW_LIMIT,
     calcular_resumen_por_divisa,
     construir_libro_excel,
     construir_pdf_movimientos,
@@ -78,14 +77,15 @@ def resumen_movimientos(request):
     except ValidationError as exc:
         return Response({"detail": exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
 
-    total = lineas.count()
+    # Todas las líneas que coinciden (la pantalla las pagina); la consulta ya
+    # trae movimiento y divisa en el mismo join, así que no crece por fila.
     resumen = calcular_resumen_por_divisa(lineas)
-    muestra = [_serializar_linea(linea) for linea in lineas[:PREVIEW_LIMIT]]
+    muestra = [_serializar_linea(linea) for linea in lineas]
 
     return Response({
-        "total": total,
+        "total": len(muestra),
         "muestra": muestra,
-        "muestra_limitada": total > PREVIEW_LIMIT,
+        "muestra_limitada": False,
         "resumen": _serializar_resumen(resumen),
     })
 
