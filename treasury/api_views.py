@@ -15,6 +15,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from security.permissions import AreaTesoreria
 from .models import (
+    AplicacionDeuda,
     ArqueoCaja,
     Banco,
     ConfiguracionFolio,
@@ -138,7 +139,7 @@ class CajaDiariaViewSet(viewsets.ViewSet):
         movimientos = (
             MovimientoTesoreria.objects.filter(fecha=fecha)
             .select_related('usuario', 'editado_por', 'usuario_cancelacion')
-            .prefetch_related('divisas__divisa')
+            .prefetch_related('divisas__divisa', 'aplicaciones__deuda__deudor')
             .order_by('creado')
         )
         return Response({
@@ -193,8 +194,8 @@ class CajaDiariaViewSet(viewsets.ViewSet):
 class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaTesoreria]
     queryset = (
-        MovimientoTesoreria.objects.select_related('deuda__deudor', 'usuario', 'editado_por', 'usuario_cancelacion')
-        .prefetch_related('divisas__divisa')
+        MovimientoTesoreria.objects.select_related('usuario', 'editado_por', 'usuario_cancelacion')
+        .prefetch_related('divisas__divisa', 'aplicaciones__deuda__deudor')
         .annotate(num_archivos=Count('archivos', filter=Q(archivos__eliminado=False)))
         .order_by('-fecha', '-creado')
     )
@@ -225,7 +226,7 @@ class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_destroy(self, instance):
-        if instance.deuda_id:
+        if instance.aplicaciones.exists():
             raise DRFValidationError('Está ligado a una deuda: cancélalo en lugar de eliminarlo.')
         instance.delete()
 
@@ -268,7 +269,7 @@ class MovimientoTesoreriaViewSet(viewsets.ModelViewSet):
                 'tipo': 'cancelacion', 'fecha': movimiento.fecha_cancelacion,
                 'usuario': usuario(movimiento.usuario_cancelacion), 'motivo': movimiento.motivo_cancelacion,
             })
-        eventos.sort(key=lambda e: e['fecha'])
+        eventos.sort(key=lambda e: e['fecha'], reverse=True)  # lo más reciente arriba
         return Response(eventos)
 
     @action(detail=False, methods=['get'])
@@ -414,9 +415,12 @@ class MovimientoArchivoViewSet(
 
 
 def _movimientos_deuda_prefetch():
+    """Aplicaciones de cada deuda con su movimiento, para Deuda.movimientos_aplicados()."""
     return Prefetch(
-        'movimientos',
-        queryset=MovimientoTesoreria.objects.select_related('usuario', 'usuario_cancelacion').prefetch_related('divisas'),
+        'aplicaciones',
+        queryset=AplicacionDeuda.objects.select_related(
+            'movimiento__usuario', 'movimiento__usuario_cancelacion',
+        ).prefetch_related('movimiento__divisas'),
     )
 
 

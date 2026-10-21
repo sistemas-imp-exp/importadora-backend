@@ -6,6 +6,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
+    AplicacionDeuda,
     ArqueoCaja,
     ArqueoConteo,
     ArqueoDivisa,
@@ -96,13 +97,23 @@ CAMPOS_HISTORIAL = (
     ('autorizo', 'Autorizó'),
     ('beneficiario', 'Beneficiario'),
     ('concepto', 'Concepto'),
-    ('deuda', 'Deuda'),
+    ('deudas', 'Deudas'),
 )
+
+
+def _texto_deudas(movimiento):
+    """Deudas ligadas con su parte, p. ej. "ESDRAS: PRESTAMO $1,000.00; ESDRAS: PRODUCTO $1,000.00"."""
+    aplicaciones = (
+        AplicacionDeuda.objects.filter(movimiento=movimiento)
+        .select_related('deuda__deudor', 'deuda__divisa').order_by('deuda_id')
+    )
+    return '; '.join(
+        f"{a.deuda.deudor.nombre}: {a.deuda.concepto} {a.deuda.divisa.simbolo}{a.monto:,.2f}" for a in aplicaciones
+    )
 
 
 def _foto_movimiento(movimiento, lineas):
     """Valores legibles del movimiento para comparar antes y después de una edición."""
-    deuda = movimiento.deuda
     foto = {
         'fecha': movimiento.fecha.strftime('%d/%m/%Y'),
         'folio': movimiento.folio,
@@ -110,7 +121,7 @@ def _foto_movimiento(movimiento, lineas):
         'autorizo': movimiento.autorizo,
         'beneficiario': movimiento.beneficiario,
         'concepto': movimiento.concepto,
-        'deuda': f"{deuda.deudor.nombre}: {deuda.concepto}" if deuda else '',
+        'deudas': _texto_deudas(movimiento),
     }
     cantidades = {linea.divisa.codigo: f"{linea.divisa.simbolo}{linea.cantidad:,.2f}" for linea in lineas}
     return foto, cantidades
@@ -151,6 +162,12 @@ class NuevaDeudaSerializer(serializers.Serializer):
         return value
 
 
+class AplicacionEntradaSerializer(serializers.Serializer):
+    """Parte del movimiento que va a una deuda. En un egreso el monto es siempre el total."""
+    deuda_id = serializers.PrimaryKeyRelatedField(source='deuda', queryset=Deuda.objects.all())
+    monto = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=Decimal('0.01'), required=False)
+
+
 class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
     # Declarado explícito para que DRF no agregue su UniqueValidator automático
     # (mensaje técnico); la unicidad la valida validate_folio() más abajo.
@@ -160,12 +177,12 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
     editado_por = UsuarioResponsableSerializer(read_only=True)
     usuario_cancelacion = UsuarioResponsableSerializer(read_only=True)
     archivos_count = serializers.SerializerMethodField()
-    deuda = serializers.SerializerMethodField()
-    # Deuda ligada (opcional): un ingreso la abona y un egreso la carga, ver
-    # _validar_deuda(). `nueva_deuda` crea la deuda junto con el egreso.
-    deuda_id = serializers.PrimaryKeyRelatedField(
-        source='deuda', queryset=Deuda.objects.all(), write_only=True, required=False, allow_null=True,
-    )
+    deudas = serializers.SerializerMethodField()
+    # Deudas ligadas (opcional), ver _preparar_deudas(): un ingreso abona y se
+    # puede repartir entre varias; un egreso carga a una sola. Sin la clave se
+    # conserva el reparto actual; [] lo quita. `nueva_deuda` crea la deuda
+    # junto con el egreso.
+    aplicaciones = AplicacionEntradaSerializer(many=True, write_only=True, required=False)
     nueva_deuda = NuevaDeudaSerializer(write_only=True, required=False)
 
     class Meta:
@@ -175,7 +192,7 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
             'creado', 'modificado', 'divisas', 'usuario',
             'editado', 'editado_por', 'editado_en',
             'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
-            'archivos_count', 'deuda', 'deuda_id', 'nueva_deuda',
+            'archivos_count', 'deudas', 'aplicaciones', 'nueva_deuda',
         ]
         read_only_fields = [
             'id', 'creado', 'modificado', 'archivos_count', 'usuario', 'editado', 'editado_por', 'editado_en',
@@ -187,15 +204,16 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
         anotado = getattr(obj, 'num_archivos', None)
         return obj.archivos.filter(eliminado=False).count() if anotado is None else anotado
 
-    def get_deuda(self, obj):
-        if obj.deuda_id is None:
-            return None
-        deuda = obj.deuda
-        return {
-            'id': deuda.id,
-            'concepto': deuda.concepto,
-            'deudor': {'id': deuda.deudor_id, 'nombre': deuda.deudor.nombre},
-        }
+    def get_deudas(self, obj):
+        return [
+            {
+                'id': aplicacion.deuda_id,
+                'concepto': aplicacion.deuda.concepto,
+                'deudor': {'id': aplicacion.deuda.deudor_id, 'nombre': aplicacion.deuda.deudor.nombre},
+                'monto': str(aplicacion.monto),
+            }
+            for aplicacion in sorted(obj.aplicaciones.all(), key=lambda a: a.deuda_id)
+        ]
 
     def validate_folio(self, value):
         consulta = MovimientoTesoreria.objects.filter(folio=value)
@@ -212,71 +230,117 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
         for d in divisas:
             if Decimal(d.get('cantidad') or 0) <= 0:
                 raise serializers.ValidationError({'divisas': 'Las cantidades deben ser mayores que cero.'})
-        if data.get('nueva_deuda') and data.get('deuda'):
+        if data.get('nueva_deuda') and data.get('aplicaciones'):
             raise serializers.ValidationError({'nueva_deuda': 'Elige una deuda existente o una nueva, no ambas.'})
         return data
 
-    def _validar_deuda(self, validated_data, instance=None):
+    def _preparar_deudas(self, validated_data, instance=None):
         """
-        Movimiento ligado a una deuda, en una sola divisa (la de la deuda):
-          - ingreso = abono, por no más del saldo pendiente y no antes de la deuda;
-          - egreso = cargo, que la aumenta (con `nueva_deuda` la crea).
-        Ningún cambio puede dejar una deuda con más abonado que debido. Se
-        llama dentro de la transacción y con la deuda bloqueada, para que dos
-        capturas simultáneas no se pasen del saldo.
+        Reparto del movimiento entre deudas, en una sola divisa (la de cada deuda):
+          - ingreso = abono, repartible entre varias deudas; las partes suman
+            exactamente el total y cada una cabe en el saldo de su deuda y no
+            es anterior a ella;
+          - egreso = cargo a una sola deuda por el total (con `nueva_deuda` la crea).
+        Ningún cambio puede dejar una deuda con más abonado que debido, tampoco
+        las que el movimiento deja de tocar. Se llama dentro de la transacción
+        con las deudas bloqueadas, para que dos capturas simultáneas no se
+        pasen del saldo. Devuelve [(deuda, monto)].
         """
         nueva = validated_data.pop('nueva_deuda', None)
+        entrada = validated_data.pop('aplicaciones', None)
         tipo = validated_data.get('tipo', instance.tipo if instance else None)
         fecha = validated_data.get('fecha', instance.fecha if instance else None)
         divisas = validated_data['divisas']
-        deuda = validated_data.get('deuda', instance.deuda if instance else None)
-        if nueva:
-            deuda = None
-
-        # El movimiento deja una deuda (o deja de ser su cargo): esa deuda no puede quedar en negativo.
-        anterior = instance.deuda if instance and instance.deuda_id and not instance.cancelado else None
-        if anterior and instance.tipo == MovimientoTesoreria.EGRESO and (deuda is None or deuda.pk != anterior.pk):
-            anterior = Deuda.objects.select_for_update().get(pk=anterior.pk)
-            cargado, abonado = anterior.calcular_totales(excluir_movimiento=instance)
-            if anterior.monto_inicial + cargado - abonado < 0:
-                raise serializers.ValidationError(
-                    {'deuda_id': 'Este egreso es cargo de una deuda con abonos que lo superarían: no se puede desligar.'}
-                )
+        total = sum((d['cantidad'] for d in divisas), Decimal('0'))
 
         if nueva:
-            if tipo != MovimientoTesoreria.EGRESO:
-                raise serializers.ValidationError({'nueva_deuda': 'Solo un egreso puede crear una deuda.'})
-            if len(divisas) != 1:
-                raise serializers.ValidationError({'divisas': 'Un cargo a deuda va en una sola divisa.'})
-            validated_data['deuda'] = Deuda.objects.create(
+            entrada = []
+        elif entrada is None:
+            entrada = [
+                {'deuda': a.deuda, 'monto': a.monto}
+                for a in AplicacionDeuda.objects.filter(movimiento=instance).select_related('deuda')
+            ] if instance else []
+            if len(entrada) == 1:
+                entrada[0]['monto'] = None  # con una sola deuda, su parte sigue al total del movimiento
+
+        if nueva and tipo != MovimientoTesoreria.EGRESO:
+            raise serializers.ValidationError({'nueva_deuda': 'Solo un egreso puede crear una deuda.'})
+        if (entrada or nueva) and len(divisas) != 1:
+            raise serializers.ValidationError({'divisas': 'Un movimiento ligado a deudas va en una sola divisa.'})
+        ids = [e['deuda'].pk for e in entrada]
+        if len(set(ids)) != len(ids):
+            raise serializers.ValidationError({'aplicaciones': 'La misma deuda aparece dos veces en el reparto.'})
+        if tipo == MovimientoTesoreria.EGRESO:
+            if len(entrada) > 1:
+                raise serializers.ValidationError({'aplicaciones': 'Un egreso solo se puede cargar a una deuda.'})
+            entrada = [{'deuda': e['deuda'], 'monto': total} for e in entrada]
+        elif entrada:
+            if len(entrada) == 1 and entrada[0].get('monto') is None:
+                entrada[0]['monto'] = total
+            if any(e.get('monto') is None for e in entrada):
+                raise serializers.ValidationError({'aplicaciones': 'Indica el monto de cada deuda.'})
+            repartido = sum((e['monto'] for e in entrada), Decimal('0'))
+            if repartido != total:
+                raise serializers.ValidationError({
+                    'aplicaciones': f'El reparto entre deudas ({repartido:,.2f}) debe sumar el total '
+                                    f'del movimiento ({total:,.2f}).'
+                })
+
+        nuevos = {e['deuda'].pk: e['monto'] for e in entrada}
+        anteriores = set(
+            AplicacionDeuda.objects.filter(movimiento=instance).values_list('deuda_id', flat=True)
+        ) if instance else set()
+        afectadas = sorted(anteriores | set(nuevos))
+        bloqueadas = {
+            d.pk: d for d in Deuda.objects.select_for_update().filter(pk__in=afectadas).select_related('divisa').order_by('pk')
+        }
+        for pk in afectadas:
+            deuda = bloqueadas[pk]
+            monto = nuevos.get(pk, Decimal('0'))
+            if pk in nuevos:
+                if deuda.cancelada:
+                    raise serializers.ValidationError({'aplicaciones': f'La deuda «{deuda.concepto}» está cancelada.'})
+                if divisas[0]['divisa'].id != deuda.divisa_id:
+                    raise serializers.ValidationError({
+                        'divisas': f'El movimiento debe ser en {deuda.divisa.codigo}, la divisa de «{deuda.concepto}».'
+                    })
+                if tipo == MovimientoTesoreria.INGRESO and fecha and fecha < deuda.fecha:
+                    raise serializers.ValidationError(
+                        {'fecha': f'El abono no puede ser anterior a la fecha de la deuda «{deuda.concepto}».'}
+                    )
+            cargado, abonado = deuda.calcular_totales(excluir_movimiento=instance)
+            if tipo == MovimientoTesoreria.INGRESO:
+                pendiente = deuda.monto_inicial + cargado - abonado
+                if monto > pendiente:
+                    raise serializers.ValidationError({
+                        'aplicaciones': f'El abono a «{deuda.concepto}» excede su saldo pendiente '
+                                        f'({deuda.divisa.simbolo}{pendiente:,.2f}).'
+                    })
+            elif deuda.monto_inicial + cargado + monto - abonado < 0:
+                raise serializers.ValidationError({
+                    'aplicaciones': 'Con este cargo la deuda quedaría con más abonado que prestado.' if monto else
+                    f'Este egreso es cargo de «{deuda.concepto}», que tiene abonos que lo superarían: no se puede desligar.'
+                })
+
+        if nueva:
+            deuda = Deuda.objects.create(
                 deudor=nueva['deudor'], concepto=nueva['concepto'], notas=nueva.get('notas', ''),
                 divisa=divisas[0]['divisa'], monto_inicial=Decimal('0'), fecha=fecha, usuario=_usuario_sesion(self),
             )
-            return
-        if deuda is None:
-            return
+            return [(deuda, total)]
+        return [(e['deuda'], e['monto']) for e in entrada]
 
-        deuda = Deuda.objects.select_for_update().get(pk=deuda.pk)
-        if deuda.cancelada:
-            raise serializers.ValidationError({'deuda_id': 'La deuda está cancelada.'})
-        if len(divisas) != 1 or divisas[0]['divisa'].id != deuda.divisa_id:
-            raise serializers.ValidationError(
-                {'divisas': f'El movimiento debe ser en una sola divisa: {deuda.divisa.codigo}, la de la deuda.'}
-            )
-        cantidad = divisas[0]['cantidad']
-        cargado, abonado = deuda.calcular_totales(excluir_movimiento=instance)
-        if tipo == MovimientoTesoreria.INGRESO:
-            if fecha and fecha < deuda.fecha:
-                raise serializers.ValidationError({'fecha': 'El abono no puede ser anterior a la fecha de la deuda.'})
-            pendiente = deuda.monto_inicial + cargado - abonado
-            if cantidad > pendiente:
-                raise serializers.ValidationError(
-                    {'divisas': f'El abono excede el saldo pendiente de la deuda ({deuda.divisa.simbolo}{pendiente:,.2f}).'}
-                )
-        elif deuda.monto_inicial + cargado + cantidad - abonado < 0:
-            raise serializers.ValidationError(
-                {'divisas': 'Con este cargo la deuda quedaría con más abonado que prestado.'}
-            )
+    @staticmethod
+    def _guardar_deudas(movimiento, reparto):
+        """Reemplaza el reparto del movimiento; True si cambió."""
+        actual = {(a.deuda_id, a.monto) for a in AplicacionDeuda.objects.filter(movimiento=movimiento)}
+        if actual == {(deuda.pk, monto) for deuda, monto in reparto}:
+            return False
+        AplicacionDeuda.objects.filter(movimiento=movimiento).delete()
+        AplicacionDeuda.objects.bulk_create(
+            [AplicacionDeuda(movimiento=movimiento, deuda=deuda, monto=monto) for deuda, monto in reparto]
+        )
+        return True
 
     # Sin validación de saldo suficiente: al pasar hojas atrasadas es normal
     # capturar un egreso antes que el ingreso del mismo día. Los días que
@@ -284,11 +348,12 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['usuario'] = _usuario_sesion(self)
         with transaction.atomic():
-            self._validar_deuda(validated_data)
+            reparto = self._preparar_deudas(validated_data)
             divisas_data = validated_data.pop('divisas')
             movimiento = MovimientoTesoreria.objects.create(**validated_data)
             for item in divisas_data:
                 MovimientoDivisa.objects.create(movimiento=movimiento, divisa=item['divisa'], cantidad=item['cantidad'])
+            self._guardar_deudas(movimiento, reparto)
             _avanzar_folio(movimiento.tipo, movimiento.folio)
         return movimiento
 
@@ -297,11 +362,11 @@ class MovimientoTesoreriaSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('No se puede editar un movimiento cancelado.')
 
         with transaction.atomic():
-            self._validar_deuda(validated_data, instance)
             antes = _foto_movimiento(instance, list(instance.divisas.select_related('divisa')))
+            reparto = self._preparar_deudas(validated_data, instance)
             divisas_data = validated_data.pop('divisas')
-            hubo_cambio = False
-            for campo in ['fecha', 'folio', 'tipo', 'autorizo', 'beneficiario', 'concepto', 'deuda']:
+            hubo_cambio = self._guardar_deudas(instance, reparto)
+            for campo in ['fecha', 'folio', 'tipo', 'autorizo', 'beneficiario', 'concepto']:
                 if campo in validated_data:
                     if getattr(instance, campo) != validated_data[campo]:
                         hubo_cambio = True
@@ -696,20 +761,29 @@ class DeudorSerializer(serializers.ModelSerializer):
 
 
 class MovimientoDeudaSerializer(serializers.ModelSerializer):
-    """Movimiento de caja ligado a una deuda: egreso = cargo, ingreso = abono (una sola divisa)."""
+    """
+    Movimiento de caja ligado a una deuda: egreso = cargo, ingreso = abono (una
+    sola divisa). `cantidad` es la parte aplicada a esta deuda y
+    `monto_movimiento` el total del folio (difieren si el abono se repartió).
+    Espera los movimientos de Deuda.movimientos_aplicados().
+    """
     cantidad = serializers.SerializerMethodField()
+    monto_movimiento = serializers.SerializerMethodField()
     usuario = UsuarioResponsableSerializer(read_only=True)
     usuario_cancelacion = UsuarioResponsableSerializer(read_only=True)
 
     class Meta:
         model = MovimientoTesoreria
         fields = [
-            'id', 'tipo', 'folio', 'fecha', 'concepto', 'cantidad', 'usuario', 'creado',
-            'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
+            'id', 'tipo', 'folio', 'fecha', 'concepto', 'cantidad', 'monto_movimiento', 'usuario', 'creado',
+            'editado', 'editado_en', 'cancelado', 'fecha_cancelacion', 'motivo_cancelacion', 'usuario_cancelacion',
         ]
 
     def get_cantidad(self, obj):
-        return str(sum((linea.cantidad for linea in obj.divisas.all()), Decimal('0')))
+        return str(obj.monto_aplicado)
+
+    def get_monto_movimiento(self, obj):
+        return str(obj.monto_movimiento)
 
 
 CAMPOS_FIJOS_CON_MOVIMIENTOS = ('deudor', 'divisa', 'monto_inicial', 'fecha')
@@ -777,8 +851,7 @@ class DeudaSerializer(serializers.ModelSerializer):
         return Deuda.estado_de(obj.cancelada, obj.monto_inicial + cargado - abonado)
 
     def get_movimientos(self, obj):
-        movimientos = sorted(obj.movimientos.all(), key=lambda m: (m.fecha, m.creado))
-        return MovimientoDeudaSerializer(movimientos, many=True).data
+        return MovimientoDeudaSerializer(obj.movimientos_aplicados(), many=True).data
 
     def validate_concepto(self, value):
         value = ' '.join(value.split())

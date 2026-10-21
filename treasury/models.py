@@ -87,15 +87,10 @@ class MovimientoTesoreria(models.Model):
     )
     motivo_cancelacion = models.TextField(blank=True)
 
-    # Movimiento ligado a una deuda (ver Deuda): un egreso es un cargo (le
-    # prestaron dinero de caja) y un ingreso es un abono.
-    deuda = models.ForeignKey(
-        'Deuda',
-        on_delete=models.PROTECT,
-        related_name='movimientos',
-        null=True,
-        blank=True,
-    )
+    # Deudas ligadas (ver Deuda), cada una con su parte en AplicacionDeuda:
+    # un egreso es un cargo (le prestaron dinero de caja) a una sola deuda; un
+    # ingreso es un abono que puede repartirse entre varias.
+    deudas = models.ManyToManyField('Deuda', through='AplicacionDeuda', related_name='movimientos', blank=True)
 
     class Meta:
         ordering = ['-fecha', '-creado']
@@ -123,13 +118,14 @@ class MovimientoTesoreria(models.Model):
             raise ValidationError('Este movimiento ya está cancelado.')
         if not motivo or not motivo.strip():
             raise ValidationError('Debes indicar el motivo de la cancelación.')
-        if self.deuda_id and self.tipo == self.EGRESO:
+        if self.tipo == self.EGRESO:
             # Quitar un cargo no puede dejar la deuda con más abonado que debido.
-            cargado, abonado = self.deuda.calcular_totales(excluir_movimiento=self)
-            if self.deuda.monto_inicial + cargado - abonado < 0:
-                raise ValidationError(
-                    'No se puede cancelar: la deuda quedaría con más abonado que prestado. Cancela primero sus abonos.'
-                )
+            for deuda in self.deudas.all():
+                cargado, abonado = deuda.calcular_totales(excluir_movimiento=self)
+                if deuda.monto_inicial + cargado - abonado < 0:
+                    raise ValidationError(
+                        'No se puede cancelar: la deuda quedaría con más abonado que prestado. Cancela primero sus abonos.'
+                    )
 
         self.cancelado = True
         self.usuario_cancelacion = usuario
@@ -459,8 +455,8 @@ class DeudaQuerySet(models.QuerySet):
         """
         def suma(tipo):
             return Coalesce(
-                Sum('movimientos__divisas__cantidad',
-                    filter=Q(movimientos__cancelado=False, movimientos__tipo=tipo)),
+                Sum('aplicaciones__monto',
+                    filter=Q(aplicaciones__movimiento__cancelado=False, aplicaciones__movimiento__tipo=tipo)),
                 Value(Decimal('0')),
                 output_field=models.DecimalField(max_digits=18, decimal_places=2),
             )
@@ -482,8 +478,9 @@ class Deuda(models.Model):
     Lo que un deudor le debe a la caja, como cuenta corriente:
       - monto_inicial: lo que debe sin que saliera dinero de caja (p. ej. una
         venta a crédito); 0 si la deuda nació de un egreso;
-      - cargos: egresos de caja ligados (MovimientoTesoreria.deuda) que la aumentan;
-      - abonos: ingresos de caja ligados que la pagan.
+      - cargos: egresos de caja ligados (AplicacionDeuda) que la aumentan;
+      - abonos: ingresos de caja ligados que la pagan; un ingreso puede
+        repartirse entre varias deudas y aquí cuenta solo su parte.
     Total, saldo y estado se calculan (DeudaQuerySet.con_saldo).
     """
     ABIERTA = 'abierta'
@@ -540,14 +537,28 @@ class Deuda(models.Model):
 
     def calcular_totales(self, excluir_movimiento=None):
         """(cargado, abonado) con los movimientos no cancelados, opcionalmente sin uno."""
-        lineas = MovimientoDivisa.objects.filter(movimiento__deuda=self, movimiento__cancelado=False)
+        lineas = AplicacionDeuda.objects.filter(deuda=self, movimiento__cancelado=False)
         if excluir_movimiento is not None and excluir_movimiento.pk:
             lineas = lineas.exclude(movimiento=excluir_movimiento)
         totales = lineas.aggregate(
-            cargado=Sum('cantidad', filter=Q(movimiento__tipo=MovimientoTesoreria.EGRESO)),
-            abonado=Sum('cantidad', filter=Q(movimiento__tipo=MovimientoTesoreria.INGRESO)),
+            cargado=Sum('monto', filter=Q(movimiento__tipo=MovimientoTesoreria.EGRESO)),
+            abonado=Sum('monto', filter=Q(movimiento__tipo=MovimientoTesoreria.INGRESO)),
         )
         return totales['cargado'] or Decimal('0'), totales['abonado'] or Decimal('0')
+
+    def movimientos_aplicados(self):
+        """
+        Cargos y abonos en orden, cada movimiento con `monto_aplicado` (lo que
+        le tocó a esta deuda) y `monto_movimiento` (total del folio). Usa las
+        `aplicaciones` precargadas si las hay.
+        """
+        movimientos = []
+        for aplicacion in self.aplicaciones.all():
+            movimiento = aplicacion.movimiento
+            movimiento.monto_aplicado = aplicacion.monto
+            movimiento.monto_movimiento = sum((linea.cantidad for linea in movimiento.divisas.all()), Decimal('0'))
+            movimientos.append(movimiento)
+        return sorted(movimientos, key=lambda m: (m.fecha, m.creado))
 
     @staticmethod
     def estado_de(cancelada, saldo):
@@ -577,6 +588,22 @@ class Deuda(models.Model):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class AplicacionDeuda(models.Model):
+    """Parte de un movimiento de caja que carga o abona a una deuda (misma divisa)."""
+    movimiento = models.ForeignKey(MovimientoTesoreria, on_delete=models.CASCADE, related_name='aplicaciones')
+    deuda = models.ForeignKey(Deuda, on_delete=models.PROTECT, related_name='aplicaciones')
+    monto = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['movimiento', 'deuda'], name='aplicacion_deuda_unica'),
+            models.CheckConstraint(condition=Q(monto__gt=0), name='aplicacion_deuda_monto_positivo'),
+        ]
+
+    def __str__(self):
+        return f"{self.movimiento.folio} → {self.deuda}: {self.monto}"
 
 
 class TipoCambio(models.Model):

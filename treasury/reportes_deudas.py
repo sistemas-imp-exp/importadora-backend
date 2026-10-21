@@ -37,11 +37,19 @@ def _estado(deuda):
 
 
 def _cantidad(movimiento):
-    return sum((linea.cantidad for linea in movimiento.divisas.all()), Decimal("0"))
+    """Lo aplicado a la deuda (un abono repartido cuenta solo su parte)."""
+    return movimiento.monto_aplicado
 
 
 def _movimientos(deuda):
-    return sorted(deuda.movimientos.all(), key=lambda m: (m.fecha, m.creado))
+    return deuda.movimientos_aplicados()
+
+
+def _concepto(movimiento, simbolo):
+    """Concepto del folio; si el pago se repartió entre deudas, lo dice con el total del folio."""
+    if movimiento.monto_aplicado == movimiento.monto_movimiento:
+        return movimiento.concepto
+    return f"{movimiento.concepto} (pago compartido; total del folio {_dinero(simbolo, movimiento.monto_movimiento)})"
 
 
 def _es_cargo(movimiento):
@@ -156,7 +164,7 @@ def construir_pdf_estado_cuenta(deudor, deudas):
                     _celda_detalle(mov.folio, TA_LEFT, cancelado),
                     _celda_detalle(mov.fecha.strftime("%d/%m/%Y"), TA_CENTER, cancelado),
                     _celda_detalle("Cargo" if _es_cargo(mov) else "Abono", TA_CENTER, cancelado),
-                    _celda_detalle(mov.concepto, TA_LEFT, cancelado),
+                    _celda_detalle(_concepto(mov, simbolo), TA_LEFT, cancelado),
                     _celda_detalle(importe if _es_cargo(mov) else "", TA_RIGHT, cancelado),
                     _celda_detalle("" if _es_cargo(mov) else importe, TA_RIGHT, cancelado),
                     _celda_detalle("Cancelado" if cancelado else "Activo", TA_CENTER, cancelado),
@@ -214,7 +222,8 @@ def construir_excel_estado_cuenta(deudor, deudas):
         for mov in _movimientos(deuda):
             cargo = _es_cargo(mov)
             ws_movs.append([
-                deuda.concepto, deuda.divisa.codigo, mov.folio, mov.fecha, "Cargo" if cargo else "Abono", mov.concepto,
+                deuda.concepto, deuda.divisa.codigo, mov.folio, mov.fecha, "Cargo" if cargo else "Abono",
+                _concepto(mov, deuda.divisa.simbolo),
                 float(_cantidad(mov)) if cargo else None, None if cargo else float(_cantidad(mov)),
                 "Cancelado" if mov.cancelado else "Activo", mov.motivo_cancelacion,
             ])
