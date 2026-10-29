@@ -17,6 +17,7 @@ from .models import (
     Empresa,
     Entrada,
     EntradaDetalle,
+    LoteGeneral,
     Producto,
     Proveedor,
     Salida,
@@ -37,25 +38,25 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
         self.producto = Producto.objects.create(talla="21-25", tipo="FREEZADO")
 
         self.entrada = Entrada.objects.create(
-            fecha="2026-03-01", proveedor=self.proveedor, factura="FACT-BLOQ", empresa=empresa_importadora(),
+            fecha="2026-03-01", empresa=empresa_importadora(),
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-BLOQ",
             camara=self.camara, cajas=100, peso_por_caja=Decimal("18.00"),
             total_kilos=Decimal("1800.00"),
-            proveedor_origen=self.proveedor,
+            proveedor_origen=self.proveedor, factura="FACT-BLOQ",
         )
 
-    def _payload(self, **cambios):
-        payload = {
+    def _payload(self, factura="FACT-BLOQ"):
+        return {
             "fecha": "2026-03-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "FACT-BLOQ",
-            "pedimento": "",
             "detalles": [{
                 "id": self.lote.id,
                 "producto_id": self.producto.id,
+                "proveedor_id": self.proveedor.id,
+                "factura": factura,
+                "pedimento": "",
                 "lote_proveedor": "LOTE-BLOQ",
                 "camara": self.camara.id,
                 "cajas": 100,
@@ -63,8 +64,6 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
                 "total_kilos": "1800.00",
             }],
         }
-        payload.update(cambios)
-        return payload
 
     def _registrar_salida(self, cajas=40):
         salida = Salida.objects.create(
@@ -84,8 +83,8 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.entrada.refresh_from_db()
-        self.assertEqual(self.entrada.factura, "FACT-NUEVA")
+        self.lote.refresh_from_db()
+        self.assertEqual(self.lote.factura, "FACT-NUEVA")
 
     def test_editar_entrada_con_salidas_se_rechaza(self):
         self._registrar_salida()
@@ -97,8 +96,8 @@ class EntradaBloqueoConSalidasApiTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 400, response.data)
-        self.entrada.refresh_from_db()
-        self.assertEqual(self.entrada.factura, "FACT-BLOQ")
+        self.lote.refresh_from_db()
+        self.assertEqual(self.lote.factura, "FACT-BLOQ")
 
     def test_no_se_puede_bajar_cajas_por_debajo_de_lo_vendido(self):
         """El caso que dejaba cajas_disponibles en negativo antes del bloqueo."""
@@ -160,19 +159,21 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
         self.otro_producto = Producto.objects.create(talla="31-35", tipo="MARQUETA")
 
         self.entrada = Entrada.objects.create(
-            fecha="2026-04-01", proveedor=self.proveedor, factura="FACT-BIT", empresa=empresa_importadora(),
+            fecha="2026-04-01", empresa=empresa_importadora(),
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-BIT",
             camara=self.camara, cajas=20, peso_por_caja=Decimal("18.00"),
             total_kilos=Decimal("360.00"),
-            proveedor_origen=self.proveedor,
+            proveedor_origen=self.proveedor, factura="FACT-BIT",
         )
 
     def _linea(self, **cambios):
         linea = {
             "id": self.lote.id,
             "producto_id": self.producto.id,
+            "proveedor_id": self.proveedor.id,
+            "factura": "FACT-BIT",
             "lote_proveedor": "LOTE-BIT",
             "camara": self.camara.id,
             "cajas": 20,
@@ -186,23 +187,29 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
         payload = {
             "fecha": "2026-04-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "FACT-BIT",
-            "pedimento": "",
             "detalles": detalles,
         }
         payload.update(cabecera)
         return self.client.put(f"/api/inventario/entradas/{self.entrada.id}/", payload, format="json")
 
-    def test_cambio_de_cabecera_queda_registrado_con_usuario(self):
-        response = self._put([self._linea()], factura="FACT-CORREGIDA")
+    def test_cambio_de_factura_de_la_linea_queda_registrado_con_usuario(self):
+        response = self._put([self._linea(factura="FACT-CORREGIDA")])
 
         self.assertEqual(response.status_code, 200, response.data)
         registro = EdicionEntrada.objects.get(campo="factura")
         self.assertEqual(registro.valor_anterior, "FACT-BIT")
         self.assertEqual(registro.valor_nuevo, "FACT-CORREGIDA")
+        self.assertEqual(registro.entrada_detalle, self.lote)
         self.assertEqual(registro.editado_por, self.user)
         self.assertIsNotNone(registro.editado_en)
+
+    def test_cambio_de_proveedor_de_la_linea_queda_registrado_por_nombre(self):
+        otro = Proveedor.objects.create(nombre="CAMANICA")
+        response = self._put([self._linea(proveedor_id=otro.id)])
+
+        self.assertEqual(response.status_code, 200, response.data)
+        registro = EdicionEntrada.objects.get(campo="proveedor_origen")
+        self.assertEqual((registro.valor_anterior, registro.valor_nuevo), ("ACUAMAYA", "CAMANICA"))
 
     def test_cambio_de_empresa_queda_registrado_por_nombre(self):
         selectos = Empresa.objects.get(nombre="MARISCOS SELECTOS")
@@ -225,6 +232,8 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
     def test_linea_agregada_y_eliminada_quedan_registradas(self):
         nueva = {
             "producto_id": self.otro_producto.id,
+            "proveedor_id": self.proveedor.id,
+            "factura": "FACT-OTRA",
             "lote_proveedor": "LOTE-NUEVO",
             "camara": self.camara.id,
             "cajas": 7,
@@ -239,6 +248,8 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
         respuesta = self._put([{
             "id": agregada.id,
             "producto_id": self.otro_producto.id,
+            "proveedor_id": self.proveedor.id,
+            "factura": "FACT-OTRA",
             "lote_proveedor": "LOTE-NUEVO",
             "camara": self.camara.id,
             "cajas": 7,
@@ -270,7 +281,7 @@ class BitacoraEdicionEntradaApiTests(APITestCase):
         self.assertEqual(listado["count"], 1)
         self.assertFalse(listado["results"][0]["editado"])
 
-        self._put([self._linea()], factura="OTRA-FACT")
+        self._put([self._linea(factura="OTRA-FACT")])
 
         listado = self.client.get("/api/inventario/entradas/").data
         self.assertTrue(listado["results"][0]["editado"])
@@ -301,13 +312,13 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
         self.producto = Producto.objects.create(talla="36-40", tipo="FREEZADO")
 
         self.entrada = Entrada.objects.create(
-            fecha="2026-05-01", proveedor=self.proveedor, factura="FACT-AUD", empresa=empresa_importadora(),
+            fecha="2026-05-01", empresa=empresa_importadora(),
         )
         self.lote = EntradaDetalle.objects.create(
             entrada=self.entrada, producto=self.producto, lote_proveedor="LOTE-AUD",
             camara=self.camara, cajas=50, peso_por_caja=Decimal("18.00"),
             total_kilos=Decimal("900.00"),
-            proveedor_origen=self.proveedor,
+            proveedor_origen=self.proveedor, factura="FACT-AUD",
         )
         salida = Salida.objects.create(
             folio_de_salida="SAL-AUD", cliente=self.cliente, fecha="2026-05-02"
@@ -323,7 +334,7 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
 
         self.assertEqual(self.client.get("/api/inventario/auditoria/entradas/").status_code, 403)
         respuesta = self.client.patch(
-            self.url, {"motivo": "x", "cabecera": {"factura": "Y"}}, format="json"
+            self.url, {"motivo": "x", "lineas": [{"id": self.lote.id, "factura": "Y"}]}, format="json"
         )
         self.assertEqual(respuesta.status_code, 403)
 
@@ -332,13 +343,13 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
 
         response = self.client.patch(
             self.url,
-            {"motivo": "Factura mal capturada", "cabecera": {"factura": "FACT-REAL"}},
+            {"motivo": "Factura mal capturada", "lineas": [{"id": self.lote.id, "factura": "fact-real"}]},
             format="json",
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.entrada.refresh_from_db()
-        self.assertEqual(self.entrada.factura, "FACT-REAL")
+        self.lote.refresh_from_db()
+        self.assertEqual(self.lote.factura, "FACT-REAL")
         registro = EdicionEntrada.objects.get(campo="factura")
         self.assertEqual(registro.motivo, "Factura mal capturada")
         self.assertEqual(registro.editado_por, self.superusuario)
@@ -346,7 +357,7 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
     def test_campo_que_altera_la_contabilidad_se_rechaza(self):
         self.client.force_authenticate(user=self.superusuario)
 
-        for campo, valor in [("cajas", 5), ("camara", 99), ("costo_por_kilo", "1.00")]:
+        for campo, valor in [("cajas", 5), ("camara", 99), ("costo_por_kilo", "1.00"), ("proveedor_origen", 1)]:
             with self.subTest(campo=campo):
                 response = self.client.patch(
                     self.url,
@@ -362,11 +373,13 @@ class AuditoriaEdicionRestringidaApiTests(APITestCase):
     def test_motivo_es_obligatorio(self):
         self.client.force_authenticate(user=self.superusuario)
 
-        response = self.client.patch(self.url, {"cabecera": {"factura": "SIN-MOTIVO"}}, format="json")
+        response = self.client.patch(
+            self.url, {"lineas": [{"id": self.lote.id, "factura": "SIN-MOTIVO"}]}, format="json",
+        )
 
         self.assertEqual(response.status_code, 400, response.data)
-        self.entrada.refresh_from_db()
-        self.assertEqual(self.entrada.factura, "FACT-AUD")
+        self.lote.refresh_from_db()
+        self.assertEqual(self.lote.factura, "FACT-AUD")
 
     def test_corregir_linea_permitida_y_leer_la_bitacora(self):
         self.client.force_authenticate(user=self.superusuario)
@@ -407,7 +420,7 @@ class EditarRecibosApiTests(APITestCase):
         self.otra_camara = Camara.objects.create(nombre="CAM-B", tipo=Camara.TIPO_PROPIA)
         producto = Producto.objects.create(talla="21-25", tipo="FREEZADO")
         self.entrada = Entrada.objects.create(
-            fecha="2026-03-01", proveedor=self.proveedor, factura="FACT-REC", empresa=empresa_importadora(),
+            fecha="2026-03-01", empresa=empresa_importadora(),
         )
         self.lineas = [
             EntradaDetalle.objects.create(
@@ -446,13 +459,13 @@ class EditarRecibosApiTests(APITestCase):
         self._editar({a.id: "IMP-1"})
         self._editar({a.id: "IMP-9"})
 
-        self.assertEqual(list(self.entrada.lotes_generales.values_list("codigo", flat=True)), ["IMP-9"])
+        self.assertEqual(list(LoteGeneral.objects.values_list("codigo", flat=True)), ["IMP-9"])
         self.assertEqual(self._editar({a.id: ""}).data["recibo_ingreso"], "")
 
-    def test_rechaza_recibo_de_otra_entrada_o_compartido_entre_camaras(self):
+    def test_un_recibo_se_comparte_entre_entradas_de_la_misma_camara(self):
         a, b, c = self.lineas
         otra = Entrada.objects.create(
-            fecha="2026-03-02", proveedor=self.proveedor, factura="OTRA", empresa=empresa_importadora(),
+            fecha="2026-03-02", empresa=empresa_importadora(),
         )
         linea_otra = EntradaDetalle.objects.create(
             entrada=otra, producto=a.producto, lote_proveedor="X", camara=self.camara,
@@ -460,8 +473,12 @@ class EditarRecibosApiTests(APITestCase):
         )
         self._editar({linea_otra.id: "IMP-OTRA"}, entrada=otra)
 
-        self.assertEqual(self._editar({a.id: "IMP-OTRA"}).status_code, 400)
-        self.assertEqual(self._editar({a.id: "IMP-X", c.id: "IMP-X"}).status_code, 400)
+        # Misma cámara: la línea se suma al recibo de la otra entrada.
+        self.assertEqual(self._editar({a.id: "IMP-OTRA"}).status_code, 200)
+        self.assertEqual(LoteGeneral.objects.get(codigo="IMP-OTRA").entradas_detalle.count(), 2)
+        # Otra cámara: no.
+        self.assertEqual(self._editar({c.id: "IMP-OTRA"}).status_code, 400)
+        self.assertEqual(self._editar({b.id: "IMP-X", c.id: "IMP-X"}).status_code, 400)
         self.assertEqual(self._editar({linea_otra.id: "IMP-Y"}).status_code, 400)  # línea ajena
 
     def test_solo_lectura_no_puede_editar_recibos(self):

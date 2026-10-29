@@ -7,6 +7,23 @@ from django.db import models
 from django.db.models.functions import Coalesce
 
 
+def kilos_salidos(relacion='salidas_detalle', **filtro):
+    """
+    Kilos que salieron físicamente de un lote por `relacion` (las líneas de salida):
+    lo vendido menos lo que se quedó en resguardo del cliente, que sigue en la
+    cámara hasta que se retira (y el retiro es otra salida, de cualquier lote).
+    `filtro` son condiciones Q sobre esas líneas (p. ej. hasta una fecha).
+    """
+    return Coalesce(
+        models.Sum(
+            models.F(f'{relacion}__total_kilos') - models.F(f'{relacion}__kilos_resguardo'),
+            filter=models.Q(**filtro) if filtro else None,
+        ),
+        models.Value(Decimal('0')),
+        output_field=models.DecimalField(max_digits=15, decimal_places=3),
+    )
+
+
 class Empresa(models.Model):
     nombre = models.CharField(max_length=150, unique=True)
     creado_por = models.ForeignKey(
@@ -138,14 +155,15 @@ class Producto(models.Model):
 
 
 class Entrada(models.Model):
+    """
+    Documento de entrada: fecha, empresa y tipo de compra. Proveedor, factura y
+    pedimento van en cada línea (una entrada puede traer mercancía de varios
+    proveedores) y el recibo de ingreso (LoteGeneral) puede abarcar varias entradas.
+    """
     fecha = models.DateField()
-    proveedor = models.ForeignKey(
-        Proveedor,
-        on_delete=models.PROTECT,
-        related_name='entradas',
-        null=True,
-        blank=True,
-    )
+    # La mitad "de llegada" de un MovimientoCamara: no es una compra, sus
+    # líneas heredan proveedor y documentos del lote de origen.
+    es_traslado = models.BooleanField(default=False)
     # A qué empresa del grupo pertenece la mercancía (IMPORTADORA, MARISCOS
     # SELECTOS…). Nullable solo a nivel base de datos: la API la exige en las
     # entradas capturadas y los traslados la heredan de la entrada de origen.
@@ -157,8 +175,6 @@ class Entrada(models.Model):
         blank=True,
     )
     es_internacional = models.BooleanField(default=False)
-    factura = models.CharField(max_length=50, blank=True)
-    pedimento = models.CharField(max_length=50, blank=True)
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -174,15 +190,16 @@ class Entrada(models.Model):
         indexes = [models.Index(fields=['-fecha'], name='entrada_fecha_idx')]
 
     def __str__(self):
-        proveedor = self.proveedor.nombre if self.proveedor else "Movimiento interno"
-        return f"Entrada {self.id} - {proveedor} ({self.fecha})"
+        tipo = "Movimiento interno" if self.es_traslado else "Compra"
+        return f"Entrada {self.id} - {tipo} ({self.fecha})"
 
 
 class LoteGeneral(models.Model):
+    """
+    Recibo de ingreso (IMP) a una cámara. Agrupa líneas de una o varias
+    entradas, todas de la misma cámara; se liga por EntradaDetalle.lote_general.
+    """
     codigo = models.CharField(max_length=30, unique=True)
-    entrada = models.ForeignKey(
-        Entrada, on_delete=models.PROTECT, related_name='lotes_generales'
-    )
     camara = models.ForeignKey(
         Camara, on_delete=models.PROTECT, related_name='lotes_generales'
     )
@@ -225,16 +242,10 @@ class EntradaDetalleQuerySet(models.QuerySet):
             'camara',
             'proveedor_origen__creado_por',
             'lote_general',
-            'entrada__proveedor',
+            'entrada',
             'movimiento_camara_como_destino__entrada_detalle_origen__entrada',
             'movimiento_camara_como_destino__entrada_detalle_origen__lote_general',
-        ).annotate(
-            kilos_vendidos_anotados=Coalesce(
-                models.Sum('salidas_detalle__total_kilos'),
-                models.Value(Decimal('0')),
-                output_field=models.DecimalField(max_digits=12, decimal_places=2),
-            ),
-        )
+        ).annotate(kilos_vendidos_anotados=kilos_salidos())
 
 
 class EntradaDetalle(models.Model):
@@ -244,10 +255,9 @@ class EntradaDetalle(models.Model):
     producto = models.ForeignKey(
         Producto, on_delete=models.PROTECT, related_name='entradas_detalle'
     )
-    # Proveedor real del lote. En una entrada normal es el mismo que entrada.proveedor;
-    # en la mitad "de llegada" de un MovimientoCamara, entrada.proveedor es None (no es
-    # una compra real) pero el producto sigue viniendo de este proveedor — se hereda del
-    # lote de origen para no perder la trazabilidad al mover mercancía entre cámaras.
+    # Proveedor del lote: lo captura el usuario en cada línea de la entrada. En la
+    # mitad "de llegada" de un MovimientoCamara se hereda del lote de origen para
+    # no perder la trazabilidad al mover mercancía entre cámaras.
     proveedor_origen = models.ForeignKey(
         Proveedor,
         on_delete=models.PROTECT,
@@ -263,6 +273,10 @@ class EntradaDetalle(models.Model):
         blank=True,
     )
     lote_proveedor = models.CharField(max_length=50)
+    # Documentos del proveedor de esta línea (vacíos en las líneas de llegada de
+    # un traslado: se leen del lote raíz, ver documento_origen).
+    factura = models.CharField(max_length=50, blank=True)
+    pedimento = models.CharField(max_length=50, blank=True)
     camara = models.ForeignKey(
         Camara,
         on_delete=models.PROTECT,
@@ -276,15 +290,17 @@ class EntradaDetalle(models.Model):
     # kilos como dos contadores independientes que se pueden desincronizar
     # (p. ej. al vender kilos sueltos de una caja ya abierta). Mayor a cero
     # porque cajas_disponibles divide entre este valor.
+    # Kilos con 3 decimales (cajas de 20 lb = 9.072 kg); precios por kilo con
+    # 4 (salen de convertir USD/lb). Los totales en pesos se quedan en centavos.
     peso_por_caja = models.DecimalField(
-        max_digits=8, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))]
+        max_digits=10, decimal_places=3, validators=[MinValueValidator(Decimal('0.001'))]
     )
-    total_kilos = models.DecimalField(max_digits=12, decimal_places=2)
+    total_kilos = models.DecimalField(max_digits=15, decimal_places=3)
     costo_por_kilo = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True
+        max_digits=14, decimal_places=4, null=True, blank=True
     )
     precio_venta_planeado = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True
+        max_digits=14, decimal_places=4, null=True, blank=True
     )
     fecha_caducidad = models.DateField(null=True, blank=True)
     observaciones = models.TextField(blank=True)
@@ -328,7 +344,7 @@ class EntradaDetalle(models.Model):
         lote = self
         recibo = self.lote_general.codigo if self.lote_general_id else ''
         visitados = set()
-        while lote.entrada.proveedor_id is None:
+        while lote.entrada.es_traslado:
             movimiento = getattr(lote, 'movimiento_camara_como_destino', None)
             if movimiento is None or movimiento.entrada_detalle_origen_id in visitados:
                 break
@@ -337,7 +353,7 @@ class EntradaDetalle(models.Model):
             if not recibo and lote.lote_general_id:
                 recibo = lote.lote_general.codigo
 
-        return {'factura': lote.entrada.factura, 'recibo': recibo}
+        return {'factura': lote.factura, 'recibo': recibo}
 
     @property
     def cajas_disponibles(self):
@@ -358,7 +374,7 @@ class EntradaDetalle(models.Model):
     def kilos_disponibles(self):
         vendidos = getattr(self, 'kilos_vendidos_anotados', None)
         if vendidos is None:
-            vendidos = self.salidas_detalle.aggregate(total=models.Sum('total_kilos'))['total'] or 0
+            vendidos = EntradaDetalle.objects.filter(pk=self.pk).aggregate(total=kilos_salidos())['total']
         return self.total_kilos - vendidos
 
 
@@ -378,6 +394,9 @@ class Salida(models.Model):
     # ("Movimiento entre cámaras"), y las salidas ya cargadas del Excel se
     # quedan con la suya vacía: blank=False solo valida capturas nuevas.
     notas = models.CharField(max_length=100)
+    # Folio propio de un retiro de resguardo (RES-0001): la salida con la que el
+    # cliente se lleva producto que dejó guardado al comprar. Vacío en las ventas.
+    folio_retiro = models.CharField(max_length=20, unique=True, null=True, blank=True)
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -394,6 +413,10 @@ class Salida(models.Model):
 
     def __str__(self):
         return self.folio_de_salida
+
+    @property
+    def es_retiro(self):
+        return bool(self.folio_retiro)
 
 
 class SalidaDetalle(models.Model):
@@ -414,20 +437,35 @@ class SalidaDetalle(models.Model):
         blank=True,
     )
     cajas = models.PositiveIntegerField()
-    total_kilos = models.DecimalField(max_digits=12, decimal_places=2)
+    total_kilos = models.DecimalField(max_digits=15, decimal_places=3)
     factura_proveedor = models.CharField(max_length=50, blank=True)
     precio_x_kilo = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True
+        max_digits=14, decimal_places=4, null=True, blank=True
     )
     total_venta = models.DecimalField(
         max_digits=12, decimal_places=2, null=True, blank=True
     )
     notas = models.CharField(max_length=200, blank=True)
+    # Resguardo: parte de lo vendido que el cliente deja guardado en la cámara.
+    # Se cobra completo, pero del lote solo sale lo entregado (total − resguardo);
+    # lo resguardado se entrega después con retiros, de este u otro proveedor.
+    cajas_resguardo = models.PositiveIntegerField(default=0)
+    kilos_resguardo = models.DecimalField(max_digits=15, decimal_places=3, default=Decimal('0'))
+    # En un retiro: la línea de venta cuyo resguardo entrega (mismo producto).
+    retiro_de = models.ForeignKey(
+        'self', on_delete=models.PROTECT, related_name='retiros', null=True, blank=True,
+    )
     creado = models.DateTimeField(auto_now_add=True)
     modificado = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['-salida__fecha']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(kilos_resguardo__gte=0) & models.Q(kilos_resguardo__lte=models.F('total_kilos')),
+                name='salidadetalle_resguardo_dentro_de_la_venta',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.salida.folio_de_salida} - {self.producto}"

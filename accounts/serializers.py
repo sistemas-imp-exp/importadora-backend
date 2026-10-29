@@ -1,4 +1,4 @@
-from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password as validar_password_django
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -6,29 +6,16 @@ from rest_framework import serializers
 
 from security.models import Area, UsuarioArea
 
-from .models import Perfil
+from .models import EventoAcceso, Perfil
+from .sesiones import esta_bloqueado, perfil_de, revocar_sesiones
 
 User = get_user_model()
 
 
 class LoginSerializer(serializers.Serializer):
-    username = serializers.CharField()
-    password = serializers.CharField(write_only=True)
-
-    def validate(self, attrs):
-        user = authenticate(
-            username=attrs["username"],
-            password=attrs["password"],
-        )
-
-        if not user:
-            raise serializers.ValidationError("Usuario o contraseña incorrectos.")
-
-        if not user.is_active:
-            raise serializers.ValidationError("Usuario inactivo.")
-
-        attrs["user"] = user
-        return attrs
+    """Solo la forma de los datos: LoginView autentica, registra y bloquea por intentos."""
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(write_only=True, max_length=128, trim_whitespace=False)
 
 
 def _url_foto(usuario, request):
@@ -45,13 +32,17 @@ class UsuarioMeSerializer(serializers.ModelSerializer):
     areas = serializers.SerializerMethodField()
     areas_solo_lectura = serializers.SerializerMethodField()
     foto = serializers.SerializerMethodField()
+    debe_cambiar_password = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email',
-            'is_superuser', 'areas', 'areas_solo_lectura', 'foto',
+            'is_superuser', 'areas', 'areas_solo_lectura', 'foto', 'debe_cambiar_password',
         ]
+
+    def get_debe_cambiar_password(self, obj):
+        return Perfil.objects.filter(usuario=obj, debe_cambiar_password=True).exists()
 
     def get_areas(self, obj):
         # Solo activas: mismo criterio que security.permissions.tiene_area, para
@@ -89,6 +80,9 @@ class CambiarPasswordSerializer(serializers.Serializer):
         if attrs['password_nueva'] != attrs['password_nueva2']:
             raise serializers.ValidationError({'password_nueva2': 'Las contraseñas nuevas no coinciden.'})
 
+        if attrs['password_nueva'] == attrs['password_actual']:
+            raise serializers.ValidationError({'password_nueva': 'La contraseña nueva debe ser distinta de la actual.'})
+
         try:
             validar_password_django(attrs['password_nueva'], user=user)
         except DjangoValidationError as exc:
@@ -125,14 +119,24 @@ class UsuarioCatalogoSerializer(serializers.ModelSerializer):
     areas = serializers.ListField(child=serializers.CharField(), required=False, write_only=True)
     # Subconjunto de `areas` que se asigna en solo lectura (consulta y descarga).
     areas_solo_lectura = serializers.ListField(child=serializers.CharField(), required=False, write_only=True)
-    password = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True, trim_whitespace=False)
+    ultimo_acceso = serializers.DateTimeField(source='last_login', read_only=True)
+    debe_cambiar_password = serializers.SerializerMethodField()
+    bloqueado = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email',
             'is_active', 'is_superuser', 'foto', 'areas', 'areas_solo_lectura', 'password',
+            'ultimo_acceso', 'debe_cambiar_password', 'bloqueado',
         ]
+
+    def get_debe_cambiar_password(self, obj):
+        return Perfil.objects.filter(usuario=obj, debe_cambiar_password=True).exists()
+
+    def get_bloqueado(self, obj):
+        return esta_bloqueado(obj)
 
     def get_foto(self, obj):
         return _url_foto(obj, self.context.get('request'))
@@ -194,6 +198,8 @@ class UsuarioCatalogoSerializer(serializers.ModelSerializer):
             user.set_password(password)
             user.save()
             self._sincronizar_areas(user, areas, solo_lectura)
+            # La contraseña la puso el superusuario: provisional.
+            Perfil.objects.filter(pk=perfil_de(user).pk).update(debe_cambiar_password=True)
 
         return user
 
@@ -203,11 +209,18 @@ class UsuarioCatalogoSerializer(serializers.ModelSerializer):
         password = validated_data.pop('password', None)
 
         with transaction.atomic():
+            desactivado = instance.is_active and validated_data.get('is_active') is False
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
             if password:
                 instance.set_password(password)
             instance.save()
+
+            # Contraseña restablecida o cuenta desactivada: fuera de todos los equipos.
+            if password or desactivado:
+                revocar_sesiones(instance)
+            if password:
+                Perfil.objects.filter(usuario=instance).update(debe_cambiar_password=True)
 
             if areas is not None or solo_lectura is not None:
                 if areas is None:
@@ -240,3 +253,17 @@ class UsuarioCatalogoSerializer(serializers.ModelSerializer):
         data['areas'] = [codigo for codigo, _ in asignaciones]
         data['areas_solo_lectura'] = [codigo for codigo, solo in asignaciones if solo]
         return data
+
+
+class EventoAccesoSerializer(serializers.ModelSerializer):
+    evento_display = serializers.CharField(source='get_evento_display', read_only=True)
+    nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventoAcceso
+        fields = ['id', 'fecha', 'evento', 'evento_display', 'usuario', 'username', 'nombre', 'ip', 'navegador', 'detalle']
+
+    def get_nombre(self, obj):
+        if obj.usuario is None:
+            return ''
+        return obj.usuario.get_full_name()

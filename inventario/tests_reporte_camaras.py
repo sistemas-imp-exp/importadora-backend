@@ -42,12 +42,12 @@ class ReporteExistenciasCamaraTests(APITestCase):
     def _lote(self, proveedor, producto, peso, cajas, fecha, camara=None, empresa=None):
         proveedor, _ = Proveedor.objects.get_or_create(nombre=proveedor)
         entrada = Entrada.objects.create(
-            fecha=fecha, proveedor=proveedor, factura=f"F-{Entrada.objects.count()}",
-            empresa=empresa or empresa_importadora(),
+            fecha=fecha, empresa=empresa or empresa_importadora(),
         )
         return EntradaDetalle.objects.create(
             entrada=entrada, producto=producto, lote_proveedor="L", camara=camara or self.mexideli,
             cajas=cajas, peso_por_caja=Decimal(peso), total_kilos=Decimal(peso * cajas), proveedor_origen=proveedor,
+            factura=f"F-{Entrada.objects.count()}",
         )
 
     def _salida(self, lote, kilos, fecha):
@@ -98,7 +98,7 @@ class ReporteExistenciasCamaraTests(APITestCase):
         params = {"fecha": "2026-09-24", "camara": self.mexideli.id}
         datos = self.client.get(URL, params)
         self.assertEqual(datos.status_code, 200)
-        self.assertEqual(datos.data["camaras"][0]["total"], "26432.00")
+        self.assertEqual(datos.data["camaras"][0]["total"], "26432.000")
 
         pdf = self.client.get(URL + "pdf/", params)
         self.assertEqual(pdf.status_code, 200)

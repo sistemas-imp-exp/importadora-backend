@@ -11,18 +11,20 @@ módulo define exactamente cuáles son y deja rastro de cada cambio en
 Deliberadamente FUERA de la lista: cajas, total_kilos, peso_por_caja, producto,
 camara, costo_por_kilo, fecha y proveedor. Todos alteran existencias, valuación
 o trazabilidad ya consumida por documentos posteriores.
+
+Factura y pedimento son de cada línea (una entrada puede traer varios
+proveedores); la cabecera ya no tiene campos corregibles por esta vía.
 """
 from django.db import transaction
 
 from .models import EdicionEntrada, Entrada, EntradaDetalle, LoteGeneral
 
 # campo -> etiqueta legible (la usa el front para nombrar la columna)
-CAMPOS_ENTRADA = {
-    'factura': 'Factura',
-    'pedimento': 'Pedimento',
-}
+CAMPOS_ENTRADA = {}
 
 CAMPOS_DETALLE = {
+    'factura': 'Factura',
+    'pedimento': 'Pedimento',
     'lote_proveedor': 'Lote proveedor',
     'precio_venta_planeado': 'Precio de venta planeado',
     'fecha_caducidad': 'Caducidad',
@@ -43,13 +45,13 @@ CAMPOS_MAYUSCULAS = {'factura', 'pedimento', 'lote_proveedor', 'observaciones'}
 CAMPOS_CABECERA_BITACORA = {
     'fecha': 'Fecha',
     'empresa': 'Empresa',
-    'proveedor': 'Proveedor',
     'es_internacional': 'Tipo de entrada',
-    'factura': 'Factura',
-    'pedimento': 'Pedimento',
 }
 
 CAMPOS_LINEA_BITACORA = {
+    'proveedor_origen': 'Proveedor',
+    'factura': 'Factura',
+    'pedimento': 'Pedimento',
     'producto': 'Producto',
     'lote_proveedor': 'Lote proveedor',
     'camara': 'Cámara',
@@ -65,6 +67,10 @@ CAMPOS_LINEA_BITACORA = {
 ETIQUETAS_BITACORA = {
     **CAMPOS_CABECERA_BITACORA,
     **CAMPOS_LINEA_BITACORA,
+    # Registros de cuando proveedor, factura y pedimento eran de la cabecera.
+    'proveedor': 'Proveedor',
+    'factura': 'Factura',
+    'pedimento': 'Pedimento',
     'recibo_ingreso': 'Recibo ingreso',
     'linea_agregada': 'Línea agregada',
     'linea_eliminada': 'Línea eliminada',
@@ -76,11 +82,23 @@ MOTIVO_ELIMINACION = 'Eliminación desde el módulo de Inventario'
 MOTIVO_RECIBO = 'Recibo de ingreso capturado después de la entrada'
 
 
+def proveedores_de(entrada: Entrada) -> str:
+    """Proveedores de las líneas de la entrada, sin repetir: "ACUAMAYA, CAMANICA"."""
+    nombres = [d.proveedor_origen.nombre for d in entrada.detalles.all() if d.proveedor_origen_id]
+    return ', '.join(dict.fromkeys(nombres))
+
+
+def facturas_de(entrada: Entrada) -> str:
+    """Facturas de las líneas de la entrada, sin repetir."""
+    return ', '.join(dict.fromkeys(d.factura for d in entrada.detalles.all() if d.factura))
+
+
 def referencia_entrada(entrada: Entrada) -> str:
     """Texto identificatorio de la entrada, para que la bitácora siga siendo
     legible cuando la entrada ya fue borrada y la FK quedó en NULL."""
-    proveedor = entrada.proveedor.nombre if entrada.proveedor_id else 'Sin proveedor'
-    return f"#{entrada.id} · {entrada.fecha} · {proveedor} · {entrada.factura or 'sin factura'}"
+    proveedores = proveedores_de(entrada) or 'Sin proveedor'
+    referencia = f"#{entrada.id} · {entrada.fecha} · {proveedores} · {facturas_de(entrada) or 'sin factura'}"
+    return referencia[:200]
 
 
 class EdicionInvalida(Exception):
@@ -215,7 +233,7 @@ def tomar_snapshot(entrada: Entrada) -> dict:
                 **{c: _valor_bitacora(d, c) for c in CAMPOS_LINEA_BITACORA},
                 '__descripcion': _descripcion_linea(d),
             }
-            for d in entrada.detalles.select_related('producto', 'camara')
+            for d in entrada.detalles.select_related('producto', 'camara', 'proveedor_origen')
         },
     }
 
@@ -240,7 +258,7 @@ def registrar_cambios(entrada: Entrada, snapshot: dict, usuario, motivo: str = M
                 motivo=motivo, editado_por=usuario,
             ))
 
-    lineas_actuales = {d.id: d for d in entrada.detalles.select_related('producto', 'camara')}
+    lineas_actuales = {d.id: d for d in entrada.detalles.select_related('producto', 'camara', 'proveedor_origen')}
 
     for detalle_id, valores in snapshot['lineas'].items():
         if detalle_id not in lineas_actuales:
@@ -303,8 +321,8 @@ def registrar_eliminacion(entrada: Entrada, usuario, motivo: str = MOTIVO_ELIMIN
 
 
 def recibos_de(entrada: Entrada) -> str:
-    """Recibos de ingreso (IMP) de la entrada, sin repetir: "IMP-1, IMP-2"."""
-    codigos = [lote.codigo for lote in entrada.lotes_generales.all()]
+    """Recibos de ingreso (IMP) de las líneas de la entrada, sin repetir: "IMP-1, IMP-2"."""
+    codigos = [d.lote_general.codigo for d in entrada.detalles.all() if d.lote_general_id]
     return ', '.join(sorted(set(codigos)))
 
 
@@ -317,8 +335,9 @@ def editar_recibos(entrada: Entrada, recibos: dict, usuario) -> list:
     lote raíz, ver EntradaDetalle.documento_origen).
 
     `recibos` es {detalle_id: codigo}; un código vacío deja la línea sin recibo.
-    Las líneas que comparten un código comparten su LoteGeneral, por lo que
-    deben estar en la misma cámara. Deja una fila de bitácora por línea cambiada.
+    Las líneas que comparten un código comparten su LoteGeneral (también las de
+    otras entradas), por lo que deben estar en la misma cámara. Deja una fila de
+    bitácora por línea cambiada.
     """
     lineas = {d.id: d for d in entrada.detalles.select_related('producto', 'camara', 'lote_general')}
     nuevos = {}
@@ -341,16 +360,16 @@ def editar_recibos(entrada: Entrada, recibos: dict, usuario) -> list:
             raise EdicionInvalida(
                 f"Las líneas con el recibo {codigo} deben estar en la misma cámara."
             )
-    en_otra_entrada = (
-        LoteGeneral.objects.filter(codigo__in=camara_por_codigo).exclude(entrada=entrada)
-        .values_list('codigo', flat=True)
-    )
-    if en_otra_entrada:
-        raise EdicionInvalida(f"El recibo {en_otra_entrada[0]} ya está registrado en otra entrada.")
+    lotes = {lote.codigo: lote for lote in LoteGeneral.objects.select_related('camara').filter(codigo__in=camara_por_codigo)}
+    for codigo, lote in lotes.items():
+        # Un recibo ya registrado (de esta u otra entrada) conserva su cámara;
+        # solo se le pueden sumar líneas de esa misma cámara.
+        if lote.camara_id != camara_por_codigo[codigo]:
+            raise EdicionInvalida(f"El recibo {codigo} ya existe en la cámara {lote.camara.nombre}.")
 
     referencia = referencia_entrada(entrada)
     registros = []
-    lotes = {lote.codigo: lote for lote in entrada.lotes_generales.all()}
+    anteriores = {l.lote_general_id for l in lineas.values() if l.lote_general_id}
     for detalle_id, codigo in nuevos.items():
         linea = lineas[detalle_id]
         anterior = linea.lote_general.codigo if linea.lote_general_id else ''
@@ -360,12 +379,8 @@ def editar_recibos(entrada: Entrada, recibos: dict, usuario) -> list:
             lote = lotes.get(codigo)
             if lote is None:
                 lote = lotes[codigo] = LoteGeneral.objects.create(
-                    codigo=codigo, entrada=entrada, camara=linea.camara,
-                    fecha_recibo=entrada.fecha, creado_por=usuario,
+                    codigo=codigo, camara=linea.camara, fecha_recibo=entrada.fecha, creado_por=usuario,
                 )
-            elif lote.camara_id != linea.camara_id:
-                lote.camara = linea.camara
-                lote.save(update_fields=['camara', 'modificado'])
         else:
             lote = None
         EntradaDetalle.objects.filter(id=linea.id).update(lote_general=lote)
@@ -377,6 +392,6 @@ def editar_recibos(entrada: Entrada, recibos: dict, usuario) -> list:
         ))
 
     # Un recibo que ya no agrupa ninguna línea se borra para liberar su código.
-    entrada.lotes_generales.filter(entradas_detalle__isnull=True).delete()
+    LoteGeneral.objects.filter(id__in=anteriores, entradas_detalle__isnull=True).delete()
     EdicionEntrada.objects.bulk_create(registros)
     return registros

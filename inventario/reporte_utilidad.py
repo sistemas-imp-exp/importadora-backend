@@ -23,6 +23,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
+from .formatos import FORMATO_KG, FORMATO_PRECIO_KG, kg
 from .models import SalidaDetalle
 from .reportes import (
     COLOR_ENCABEZADO_RL,
@@ -51,14 +52,22 @@ def _margen(utilidad, venta):
 
 
 def lineas_vendidas(filtros):
-    """Líneas de salida a clientes con fecha entre desde y hasta (inclusive) y los filtros opcionales."""
+    """
+    Líneas de venta a clientes con fecha entre desde y hasta (inclusive) y los
+    filtros opcionales. Los retiros de resguardo no son venta: su costo se suma
+    a la línea de venta que entregan (ver _costo).
+    """
     lineas = (
         SalidaDetalle.objects
-        .filter(salida__cliente__isnull=False, salida__fecha__gte=filtros["desde"], salida__fecha__lte=filtros["hasta"])
+        .filter(
+            salida__cliente__isnull=False, retiro_de__isnull=True,
+            salida__fecha__gte=filtros["desde"], salida__fecha__lte=filtros["hasta"],
+        )
         .select_related(
             "salida__cliente", "producto", "camara",
             "entrada_detalle__proveedor_origen", "entrada_detalle__entrada__empresa",
         )
+        .prefetch_related("retiros__entrada_detalle")
         .order_by("salida__fecha", "salida__folio_de_salida", "id")
     )
     if filtros.get("empresa"):
@@ -74,6 +83,22 @@ def lineas_vendidas(filtros):
     return lineas
 
 
+def _costo(d):
+    """
+    Costo de lo vendido en la línea, por partes: lo entregado al vender sale de
+    su lote; lo que quedó en resguardo, del lote de cada retiro (puede ser otro
+    proveedor), y lo que aún no se retira, al costo del lote original.
+    None si alguna parte sale de un lote sin costo.
+    """
+    retiros = list(d.retiros.all())
+    pendiente = d.kilos_resguardo - sum((r.total_kilos for r in retiros), Decimal("0"))
+    partes = [(d.total_kilos - d.kilos_resguardo + pendiente, d.entrada_detalle)]
+    partes += [(r.total_kilos, r.entrada_detalle) for r in retiros]
+    if any(kilos and lote.costo_por_kilo is None for kilos, lote in partes):
+        return None
+    return sum((kilos * lote.costo_por_kilo for kilos, lote in partes if kilos), Decimal("0")).quantize(Decimal("0.01"))
+
+
 def _linea(d):
     lote = d.entrada_detalle
     kilos = d.total_kilos
@@ -83,8 +108,12 @@ def _linea(d):
         venta = (kilos * d.precio_x_kilo).quantize(Decimal("0.01"))
     else:
         venta = None
-    costo_kg = lote.costo_por_kilo if lote else None
-    costo = (kilos * costo_kg).quantize(Decimal("0.01")) if costo_kg is not None else None
+    costo = _costo(d)
+    if not d.kilos_resguardo:
+        costo_kg = lote.costo_por_kilo if lote else None
+    else:
+        # Con resguardo puede mezclar lotes: el costo por kg es el promedio.
+        costo_kg = (costo / kilos).quantize(Decimal("0.0001")) if costo is not None and kilos else None
     if venta is None:
         estado = ESTADO_SIN_PRECIO
     elif costo is None:
@@ -105,7 +134,7 @@ def _linea(d):
         "proveedor": lote.proveedor_origen.nombre if lote and lote.proveedor_origen_id else "—",
         "camara": d.camara.nombre if d.camara_id else "—",
         "kilos": kilos,
-        "precio_kg": (venta / kilos).quantize(Decimal("0.01")) if venta is not None and kilos else None,
+        "precio_kg": (venta / kilos).quantize(Decimal("0.0001")) if venta is not None and kilos else None,
         "venta": venta,
         "costo_kg": costo_kg,
         "costo": costo,
@@ -204,7 +233,6 @@ def serializar_reporte(reporte):
 
 # ---------------------------------------------------------------- Excel
 FORMATO_PESOS = '"$"#,##0.00'
-FORMATO_KG = "#,##0.00"
 ESTADOS_TEXTO = {ESTADO_COMPLETA: "", ESTADO_SIN_PRECIO: "Sin precio", ESTADO_SIN_COSTO: "Sin costo"}
 
 
@@ -257,7 +285,7 @@ def construir_excel(reporte, subtitulo):
         celda.number_format = FORMATO_KG
     for col in (9, 10, 11, 12, 13):
         for (celda,) in det.iter_rows(min_row=2, min_col=col, max_col=col):
-            celda.number_format = FORMATO_PESOS
+            celda.number_format = FORMATO_PRECIO_KG if col in (9, 11) else FORMATO_PESOS
     for i, ancho in enumerate((12, 14, 24, 18, 14, 22, 18, 11, 11, 14, 11, 14, 14, 10, 13), start=1):
         det.column_dimensions[det.cell(row=1, column=i).column_letter].width = ancho
     det.freeze_panes = "C2"
@@ -285,7 +313,7 @@ def construir_pdf(reporte, subtitulo):
     elementos.append(Paragraph(
         f"<b>Venta:</b> {pesos(r['venta'])} &nbsp;&nbsp; <b>Costo:</b> {pesos(r['costo'])} &nbsp;&nbsp; "
         f"<b>Utilidad:</b> {pesos(r['utilidad'])} &nbsp;&nbsp; <b>Margen:</b> {margen(r['margen'])} &nbsp;&nbsp; "
-        f"<b>Kg vendidos:</b> {r['kilos']:,.2f}",
+        f"<b>Kg vendidos:</b> {kg(r['kilos'])}",
         estilo_resumen,
     ))
     incompletas = r["incompletas"]
@@ -307,7 +335,7 @@ def construir_pdf(reporte, subtitulo):
         filas = [[Paragraph(h, estilo_enc) for h in encabezados]]
         for g in reporte["grupos"]:
             filas.append([
-                _celda(g["etiqueta"]), _celda(f"{g['lineas']:,}", TA_RIGHT), _celda(f"{g['kilos']:,.2f}", TA_RIGHT),
+                _celda(g["etiqueta"]), _celda(f"{g['lineas']:,}", TA_RIGHT), _celda(kg(g['kilos']), TA_RIGHT),
                 _celda(pesos(g["venta"]), TA_RIGHT), _celda(pesos(g["costo"]), TA_RIGHT),
                 _celda(pesos(g["utilidad"]), TA_RIGHT), _celda(margen(g["margen"]), TA_RIGHT),
             ])
@@ -315,7 +343,7 @@ def construir_pdf(reporte, subtitulo):
                                  alignment=TA_RIGHT)
         filas.append([
             Paragraph("Total", ParagraphStyle("total-izq", parent=negrita, alignment=0)),
-            Paragraph(f"{r['lineas']:,}", negrita), Paragraph(f"{r['kilos']:,.2f}", negrita),
+            Paragraph(f"{r['lineas']:,}", negrita), Paragraph(kg(r['kilos']), negrita),
             Paragraph(pesos(r["venta"]), negrita), Paragraph(pesos(r["costo"]), negrita),
             Paragraph(pesos(r["utilidad"]), negrita), Paragraph(margen(r["margen"]), negrita),
         ])

@@ -57,10 +57,13 @@ INSTALLED_APPS = [
     'corsheaders',
     'treasury',
     'inventario',
+    'cartera',
     "accounts",
     "security",
     'rest_framework',
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
+    "notificaciones",
 ]
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -102,6 +105,7 @@ AUTH_PASSWORD_VALIDATORS = [
     },
     {
         'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {'min_length': 10},
     },
     {
         'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
@@ -136,17 +140,32 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # JWT + versión de sesión + contraseña provisional (accounts/authentication.py).
+        "accounts.authentication.JWTSesionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
     "EXCEPTION_HANDLER": "importadora.exception_handler.custom_exception_handler",
 }
+# Access de 30 min (solo en memoria del navegador). El refresh rota en cada uso
+# y el usado pasa a la lista negra; vence a las 12 h sin renovarse. El cierre
+# por 45 min de inactividad lo hace el frontend (el sondeo de notificaciones
+# renueva tokens aunque nadie esté frente al equipo).
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "REFRESH_TOKEN_LIFETIME": timedelta(hours=12),
     "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": False,
-    "UPDATE_LAST_LOGIN": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": False,
 }
+
+# Cookie del refresh token: httpOnly, SameSite=Strict y solo bajo /api/auth/.
+# AUTH_COOKIE_SECURE=True en cuanto el sitio se sirva por HTTPS.
+AUTH_COOKIE_NAME = "imp_refresh"
+AUTH_COOKIE_PATH = "/api/auth/"
+AUTH_COOKIE_SECURE = env.bool("AUTH_COOKIE_SECURE", default=False)
+
+# Encabezados de seguridad (además de los que ya pone SecurityMiddleware).
+X_FRAME_OPTIONS = "DENY"
+SECURE_REFERRER_POLICY = "same-origin"

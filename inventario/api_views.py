@@ -1,8 +1,6 @@
-from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import DecimalField, Exists, OuterRef, Prefetch, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Exists, OuterRef, Prefetch, Q
 from django.http import HttpResponse
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
@@ -13,7 +11,9 @@ from security.permissions import AreaInventario
 from .paginacion import PaginacionInventario
 from .exportar_tablas import libro_entradas, libro_salidas
 
-from .auditoria import EdicionInvalida, editar_recibos, entrada_tiene_salidas, registrar_eliminacion
+from .auditoria import (
+    EdicionInvalida, editar_recibos, entrada_tiene_salidas, facturas_de, proveedores_de, registrar_eliminacion,
+)
 from .models import (
     Camara,
     Cliente,
@@ -27,6 +27,7 @@ from .models import (
     Proveedor,
     Salida,
     SalidaDetalle,
+    kilos_salidos,
 )
 from .api_serializers import (
     CamaraSerializer,
@@ -102,12 +103,12 @@ class EntradaViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaInventario]
     queryset = (
         Entrada.objects
-        .select_related('proveedor__creado_por', 'creado_por', 'empresa')
+        .select_related('creado_por', 'empresa')
         .prefetch_related(
             # Los detalles se traen con su consumo ya anotado y sus relaciones
-            # resueltas: es lo que evita las miles de consultas por lote.
+            # resueltas (proveedor y recibo incluidos): es lo que evita las
+            # miles de consultas por lote.
             Prefetch('detalles', queryset=EntradaDetalle.objects.con_consumo()),
-            'lotes_generales',
         )
         .annotate(fue_editada=Exists(EdicionEntrada.objects.filter(entrada=OuterRef('pk'))))
     )
@@ -123,10 +124,10 @@ class EntradaViewSet(viewsets.ModelViewSet):
             # Cubre lo que el usuario tiene a la mano del documento físico y lo
             # que ve en la tabla. Toca detalles, así que hace falta distinct().
             queryset = queryset.filter(
-                Q(factura__icontains=busqueda)
-                | Q(pedimento__icontains=busqueda)
-                | Q(proveedor__nombre__icontains=busqueda)
-                | Q(lotes_generales__codigo__icontains=busqueda)
+                Q(detalles__factura__icontains=busqueda)
+                | Q(detalles__pedimento__icontains=busqueda)
+                | Q(detalles__proveedor_origen__nombre__icontains=busqueda)
+                | Q(detalles__lote_general__codigo__icontains=busqueda)
                 | Q(detalles__lote_proveedor__icontains=busqueda)
                 | Q(detalles__producto__talla__icontains=busqueda)
                 | Q(detalles__producto__tipo__icontains=busqueda)
@@ -164,21 +165,26 @@ class EntradaViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def excel(self, request):
         """La tabla de Entradas en Excel, con los mismos filtros y sin paginar."""
-        entradas = self.filter_queryset(self.get_queryset()).filter(proveedor__isnull=False)
+        entradas = self.filter_queryset(self.get_queryset()).filter(es_traslado=False)
         return _respuesta_excel(libro_entradas(entradas), "entradas.xlsx")
 
     @action(detail=False, methods=['get'])
     def resumen(self, request):
         """
-        Lista ligera para selectores: id, fecha, proveedor y factura, sin lotes.
+        Lista ligera para selectores: id, fecha, proveedores y facturas (de sus
+        líneas, sin repetir), sin lotes.
 
         La usa Auditoría de entradas, que necesita todas las entradas para su
         buscador pero ninguno de sus detalles hasta que se elige una.
         """
         entradas = (
             Entrada.objects
-            .filter(proveedor__isnull=False)
-            .select_related('proveedor')
+            .filter(es_traslado=False)
+            .prefetch_related(Prefetch(
+                'detalles', queryset=EntradaDetalle.objects.select_related('proveedor_origen').only(
+                    'entrada_id', 'factura', 'proveedor_origen__nombre',
+                ),
+            ))
             .annotate(fue_editada=Exists(EdicionEntrada.objects.filter(entrada=OuterRef('pk'))))
             .order_by('-fecha')
         )
@@ -186,8 +192,8 @@ class EntradaViewSet(viewsets.ModelViewSet):
             {
                 'id': e.id,
                 'fecha': e.fecha.isoformat(),
-                'proveedor': e.proveedor.nombre,
-                'factura': e.factura,
+                'proveedor': proveedores_de(e),
+                'factura': facturas_de(e),
                 'editado': e.fue_editada,
             }
             for e in entradas
@@ -210,13 +216,13 @@ class EntradaViewSet(viewsets.ModelViewSet):
 
         usuario = request.user if request.user.is_authenticated else None
 
-        # Las líneas y el lote general apuntan a la entrada con on_delete=PROTECT,
-        # así que hay que borrarlos en orden: sin esto, borrar cualquier entrada
-        # con líneas lanza ProtectedError (error 500 en vez de una respuesta útil).
+        # El recibo puede ser compartido con otras entradas: solo se borra si
+        # se queda sin líneas (libera su código).
         with transaction.atomic():
             registrar_eliminacion(entrada, usuario)
+            recibos = set(entrada.detalles.exclude(lote_general=None).values_list('lote_general_id', flat=True))
             entrada.detalles.all().delete()
-            entrada.lotes_generales.all().delete()
+            LoteGeneral.objects.filter(id__in=recibos, entradas_detalle__isnull=True).delete()
             entrada.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -224,7 +230,7 @@ class EntradaViewSet(viewsets.ModelViewSet):
 
 class LoteGeneralViewSet(viewsets.ModelViewSet):
     permission_classes = [AreaInventario]
-    queryset = LoteGeneral.objects.select_related('creado_por', 'camara', 'entrada')
+    queryset = LoteGeneral.objects.select_related('creado_por', 'camara')
     serializer_class = LoteGeneralSerializer
 
 
@@ -245,10 +251,31 @@ class SalidaViewSet(viewsets.ModelViewSet):
             # descargando TODAS las entradas.
             'detalles__producto',
             'detalles__entrada_detalle__proveedor_origen',
+            'detalles__verificacion_cartera__usuario',
+            'detalles__retiros',
+            'detalles__retiro_de__salida',
         )
     )
     serializer_class = SalidaSerializer
     pagination_class = PaginacionInventario
+
+    def destroy(self, request, *args, **kwargs):
+        salida = self.get_object()
+        if salida.folio_retiro:
+            mensaje = 'Es un retiro de resguardo: se cancela desde Resguardos.'
+        elif SalidaDetalle.objects.filter(retiro_de__salida=salida).exists():
+            mensaje = 'Ya se entregó parte de su resguardo: cancela primero esos retiros en Resguardos.'
+        else:
+            return super().destroy(request, *args, **kwargs)
+        return Response({'detail': mensaje}, status=status.HTTP_400_BAD_REQUEST)
+
+    def perform_destroy(self, instance):
+        from cartera.avisos import avisar_correccion, revisiones_de
+
+        with transaction.atomic():
+            revisiones = revisiones_de(instance)
+            avisar_correccion(instance, revisiones, self.request.user, eliminada=True)
+            instance.delete()
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -313,12 +340,7 @@ class MovimientoCamaraViewSet(
         'entrada_detalle_origen__movimiento_camara_como_destino__entrada_detalle_origen__lote_general',
         'entrada_detalle_destino__entrada', 'entrada_detalle_destino__lote_general',
         'entrada_detalle_origen__proveedor_origen', 'entrada_detalle_destino__entrada__empresa',
-    ).annotate(
-        destino_kilos_vendidos=Coalesce(
-            Sum('entrada_detalle_destino__salidas_detalle__total_kilos'), Value(Decimal('0')),
-            output_field=DecimalField(max_digits=12, decimal_places=2),
-        ),
-    )
+    ).annotate(destino_kilos_vendidos=kilos_salidos('entrada_detalle_destino__salidas_detalle'))
     serializer_class = MovimientoCamaraSerializer
 
     @action(detail=True, methods=['patch'])

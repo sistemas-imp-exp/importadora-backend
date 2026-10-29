@@ -11,9 +11,9 @@ from decimal import Decimal
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from .formatos import FORMATO_KG, FORMATO_PRECIO_KG
 from .reportes import _estilizar_encabezado
 
-FORMATO_KG = "#,##0.00"
 FORMATO_PESOS = '"$"#,##0.00'
 FORMATO_FECHA = "DD/MM/YYYY"
 
@@ -52,10 +52,13 @@ def libro_entradas(entradas):
         caducidades = [d.fecha_caducidad for d in lineas if d.fecha_caducidad]
         con_salidas = any(d.total_kilos != d.kilos_disponibles for d in lineas)
         recibos = ", ".join(sorted({d.lote_general.codigo for d in lineas if d.lote_general_id}))
-        proveedor = e.proveedor.nombre if e.proveedor_id else "—"
+        # Una entrada puede traer varios proveedores, cada uno con sus documentos.
+        proveedores = ", ".join(dict.fromkeys(d.proveedor_origen.nombre for d in lineas if d.proveedor_origen_id))
+        facturas = ", ".join(dict.fromkeys(d.factura for d in lineas if d.factura))
+        pedimentos = ", ".join(dict.fromkeys(d.pedimento for d in lineas if d.pedimento))
         empresa = e.empresa.nombre if e.empresa_id else "—"
         resumen.append([
-            e.fecha, proveedor, empresa, e.factura or "—", e.pedimento or "", recibos or "—",
+            e.fecha, proveedores or "—", empresa, facturas or "—", pedimentos, recibos or "—",
             len(lineas), cajas, _numero(kilos), min(caducidades) if caducidades else None,
             "Importación" if e.es_internacional else "Nacional",
             "Sí" if getattr(e, "fue_editada", False) else "No",
@@ -65,7 +68,8 @@ def libro_entradas(entradas):
         tot_kilos += kilos
         for d in lineas:
             detalle.append([
-                e.fecha, proveedor, empresa, e.factura or "—",
+                e.fecha, d.proveedor_origen.nombre if d.proveedor_origen_id else "—", empresa,
+                d.factura or "—", d.pedimento or "",
                 d.lote_general.codigo if d.lote_general_id else "—",
                 f"{d.producto.talla} {d.producto.tipo}", d.lote_proveedor,
                 d.camara.nombre if d.camara_id else "Venta directa",
@@ -86,12 +90,12 @@ def libro_entradas(entradas):
     )
     _hoja(
         wb.create_sheet(), "Detalle",
-        ["Fecha", "Proveedor", "Empresa", "Factura", "Recibo", "Producto", "Lote proveedor", "Cámara",
+        ["Fecha", "Proveedor", "Empresa", "Factura", "Pedimento", "Recibo", "Producto", "Lote proveedor", "Cámara",
          "Cajas", "Kg/caja", "Total kg", "Disponible kg", "Costo/kg", "Caducidad", "Observaciones"],
         detalle,
-        {1: FORMATO_FECHA, 9: "#,##0", 10: FORMATO_KG, 11: FORMATO_KG, 12: FORMATO_KG,
-         13: FORMATO_PESOS, 14: FORMATO_FECHA},
-        [12, 24, 20, 16, 14, 20, 16, 20, 9, 10, 12, 13, 12, 12, 30],
+        {1: FORMATO_FECHA, 10: "#,##0", 11: FORMATO_KG, 12: FORMATO_KG, 13: FORMATO_KG,
+         14: FORMATO_PRECIO_KG, 15: FORMATO_FECHA},
+        [12, 24, 20, 16, 16, 14, 20, 16, 20, 9, 10, 12, 13, 12, 12, 30],
     )
     return wb
 
@@ -143,7 +147,7 @@ def libro_salidas(salidas):
         ["Fecha", "Folio", "Cliente", "Producto", "Lote origen", "Proveedor", "Cámara", "Recibo",
          "Factura proveedor", "Cajas", "Total kg", "Precio/kg", "Total venta", "Nota"],
         detalle,
-        {1: FORMATO_FECHA, 10: "#,##0", 11: FORMATO_KG, 12: FORMATO_PESOS, 13: FORMATO_PESOS},
+        {1: FORMATO_FECHA, 10: "#,##0", 11: FORMATO_KG, 12: FORMATO_PRECIO_KG, 13: FORMATO_PESOS},
         [12, 16, 26, 20, 16, 24, 20, 14, 18, 9, 12, 12, 14, 30],
     )
     return wb

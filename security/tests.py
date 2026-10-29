@@ -5,11 +5,12 @@ from django.test import TestCase
 from django.urls import URLResolver
 from rest_framework.test import APITestCase
 
+import cartera.api_urls
 import inventario.api_urls
 import treasury.api_urls
 
 from .models import Area
-from .permissions import AREA_INVENTARIO, AREA_TESORERIA
+from .permissions import AREA_CARTERA, AREA_INVENTARIO, AREA_TESORERIA
 from .testing import crear_usuario_con_area
 
 
@@ -40,12 +41,13 @@ def _rutas_concretas(modulo_urls, prefijo):
 
 RUTAS_TESORERIA = _rutas_concretas(treasury.api_urls, "/api/treasury/")
 RUTAS_INVENTARIO = _rutas_concretas(inventario.api_urls, "/api/inventario/")
+RUTAS_CARTERA = _rutas_concretas(cartera.api_urls, "/api/cartera/")
 
 
 class AreasBaseMigracionTests(TestCase):
     def test_la_migracion_crea_las_areas_de_las_que_depende_el_ruteo(self):
         codigos = set(Area.objects.values_list("codigo", flat=True))
-        self.assertTrue({"TES", "INV", "ADMIN"} <= codigos)
+        self.assertTrue({"TES", "INV", "CAR", "ADMIN"} <= codigos)
 
 
 class PermisosPorAreaApiTests(APITestCase):
@@ -59,6 +61,7 @@ class PermisosPorAreaApiTests(APITestCase):
         # tests pasarían en vacío.
         self.assertGreater(len(RUTAS_TESORERIA), 20)
         self.assertGreater(len(RUTAS_INVENTARIO), 20)
+        self.assertGreater(len(RUTAS_CARTERA), 10)
 
     def _assert_todas_prohibidas(self, rutas, usuario):
         self.client.force_authenticate(user=usuario)
@@ -68,7 +71,7 @@ class PermisosPorAreaApiTests(APITestCase):
 
     def test_usuario_sin_areas_no_entra_a_ningun_endpoint(self):
         usuario = crear_usuario_con_area("sin_area")
-        self._assert_todas_prohibidas(RUTAS_TESORERIA + RUTAS_INVENTARIO, usuario)
+        self._assert_todas_prohibidas(RUTAS_TESORERIA + RUTAS_INVENTARIO + RUTAS_CARTERA, usuario)
 
     def test_inventario_no_entra_a_tesoreria(self):
         self._assert_todas_prohibidas(RUTAS_TESORERIA, crear_usuario_con_area("almacen", AREA_INVENTARIO))
@@ -76,8 +79,13 @@ class PermisosPorAreaApiTests(APITestCase):
     def test_tesoreria_no_entra_a_inventario(self):
         self._assert_todas_prohibidas(RUTAS_INVENTARIO, crear_usuario_con_area("cajero", AREA_TESORERIA))
 
+    def test_cartera_es_un_area_aparte(self):
+        # Cartera consulta ingresos de Tesorería por su propia ruta, no por la de Tesorería.
+        self._assert_todas_prohibidas(RUTAS_CARTERA, crear_usuario_con_area("cajero", AREA_TESORERIA, AREA_INVENTARIO))
+        self._assert_todas_prohibidas(RUTAS_TESORERIA + RUTAS_INVENTARIO, crear_usuario_con_area("cobranza", AREA_CARTERA))
+
     def test_anonimo_recibe_401(self):
-        for ruta in (RUTAS_TESORERIA[0], RUTAS_INVENTARIO[0]):
+        for ruta in (RUTAS_TESORERIA[0], RUTAS_INVENTARIO[0], RUTAS_CARTERA[0]):
             with self.subTest(ruta=ruta):
                 self.assertEqual(self.client.get(ruta).status_code, 401)
 
@@ -89,6 +97,10 @@ class PermisosPorAreaApiTests(APITestCase):
         self.client.force_authenticate(user=crear_usuario_con_area("almacen", AREA_INVENTARIO))
         self.assertEqual(self.client.get("/api/inventario/camaras/").status_code, 200)
         self.assertEqual(self.client.get("/api/inventario/existencias/").status_code, 200)
+
+        self.client.force_authenticate(user=crear_usuario_con_area("cobranza", AREA_CARTERA))
+        self.assertEqual(self.client.get("/api/cartera/clientes/").status_code, 200)
+        self.assertEqual(self.client.get("/api/cartera/reportes/saldos/").status_code, 200)
 
     def test_area_desactivada_no_da_acceso_ni_aparece_en_me(self):
         usuario = crear_usuario_con_area("cajero", AREA_TESORERIA)
@@ -181,3 +193,17 @@ class AsignarSoloLecturaApiTests(APITestCase):
         self.assertEqual(respuesta.status_code, 400)
         self.assertIn("areas_solo_lectura", respuesta.data)
 
+
+
+class CarteraSoloLecturaApiTests(APITestCase):
+    """Cartera en solo lectura: consulta y descarga todo, no escribe nada."""
+
+    def setUp(self):
+        self.client.force_authenticate(user=crear_usuario_con_area("lector", AREA_CARTERA, solo_lectura=True))
+
+    def test_consulta_pero_no_escribe(self):
+        for ruta in RUTAS_CARTERA:
+            with self.subTest(ruta=ruta):
+                self.assertNotEqual(self.client.get(ruta).status_code, 403)
+                for metodo in ("post", "put", "patch", "delete"):
+                    self.assertEqual(getattr(self.client, metodo)(ruta, {}, format="json").status_code, 403)

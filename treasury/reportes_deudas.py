@@ -111,7 +111,7 @@ def construir_pdf_estado_cuenta(deudor, deudas):
     ]
 
     elementos = [
-        Paragraph("Importadora y Exportadora de Mariscos", estilo_empresa),
+        Paragraph("Importadora y Exportadora de Mariscos de Centro América y el Caribe", estilo_empresa),
         Paragraph("Estado de cuenta", estilo_titulo),
         Paragraph(f"<b>{escape(deudor.nombre)}</b> · {deudor.get_tipo_display()}"
                   + (f" · Tel. {escape(deudor.telefono)}" if deudor.telefono else ""), estilo_subtitulo),

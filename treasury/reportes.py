@@ -273,7 +273,7 @@ def construir_pdf_movimientos(lineas, resumen, fecha_inicio, fecha_fin, filtros_
     )
 
     elementos = [
-        Paragraph("Importadora y Exportadora de Mariscos", estilo_empresa),
+        Paragraph("Importadora y Exportadora de Mariscos de Centro América y el Caribe", estilo_empresa),
         Paragraph("Reporte de movimientos de Tesorería", estilo_titulo),
         Paragraph(f"Del {fecha_inicio.strftime('%d/%m/%Y')} al {fecha_fin.strftime('%d/%m/%Y')}", estilo_subtitulo),
     ]

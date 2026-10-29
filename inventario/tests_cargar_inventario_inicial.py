@@ -72,18 +72,22 @@ class CargarInventarioInicialTests(TestCase):
         self.assertIn("productos nuevos: 1", salida)
         self.assertIn("IMPORTADORA fila 4: Caducidad en el archivo: 31/04/2025", salida)
 
-        imp25 = LoteGeneral.objects.get(codigo="IMP25").entrada
-        self.assertEqual((imp25.fecha, imp25.empresa.nombre, imp25.proveedor.nombre), (F.date(), "IMPORTADORA", "BEE GEE"))
-        self.assertEqual(imp25.factura, "1185, 3177")
+        imp25 = LoteGeneral.objects.get(codigo="IMP25").entradas_detalle.first().entrada
+        self.assertEqual((imp25.fecha, imp25.empresa.nombre), (F.date(), "IMPORTADORA"))
+        # Cada línea con su proveedor y su factura.
+        self.assertEqual(
+            sorted(imp25.detalles.values_list("proveedor_origen__nombre", "factura")),
+            [("BEE GEE", "1185"), ("CAMANICA", "3177")],
+        )
         linea = imp25.detalles.get(producto__talla="51-60")
         self.assertEqual(linea.proveedor_origen.nombre, "CAMANICA")
         self.assertEqual((linea.total_kilos, linea.cajas, linea.peso_por_caja), (Decimal("45.50"), 2, Decimal("20")))
         self.assertIsNone(linea.fecha_caducidad)
-        self.assertIn("Factura de esta línea: 3177", linea.observaciones)
+        self.assertEqual(linea.factura, "3177")
 
         imp30 = EntradaDetalle.objects.get(lote_general__codigo="IMP30")
         self.assertEqual((imp30.lote_proveedor, imp30.fecha_caducidad), ("SIN LOTE", datetime.date(2027, 1, 5)))
-        self.assertEqual(LoteGeneral.objects.get(codigo="MS05").entrada.empresa.nombre, "MARISCOS SELECTOS")
+        self.assertEqual(EntradaDetalle.objects.get(lote_general__codigo="MS05").entrada.empresa.nombre, "MARISCOS SELECTOS")
         self.assertEqual(sum(l.kilos_disponibles for l in EntradaDetalle.objects.con_consumo()), Decimal("1093.50"))
 
     def test_no_carga_dos_veces(self):

@@ -16,7 +16,7 @@ existentes (solo para quitar capturas de prueba; se niega si hay muchas).
 """
 import datetime
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.contrib.auth import get_user_model
@@ -228,27 +228,22 @@ class Command(BaseCommand):
 
         kilos = defaultdict(Decimal)
         for (pestana, recibo), renglones in sorted(recibos.items()):
-            facturas = list(dict.fromkeys(l["factura"] for l in renglones if l["factura"]))
-            proveedor = Counter(l["proveedor"] for l in renglones).most_common(1)[0][0]
             entrada = Entrada.objects.create(
                 fecha=renglones[0]["fecha"],
-                proveedor=proveedores[proveedor],
                 empresa=empresas[pestana],
-                factura=", ".join(facturas)[:50],
                 creado_por=usuario,
             )
             lote_general = LoteGeneral.objects.create(
-                codigo=recibo, entrada=entrada, camara=camaras[renglones[0]["camara"]],
+                codigo=recibo, camara=camaras[renglones[0]["camara"]],
                 fecha_recibo=entrada.fecha, creado_por=usuario,
             )
             for l in renglones:
                 notas = ["Carga inicial al 30/09/2026"]
-                if len(facturas) > 1 and l["factura"]:
-                    notas.append(f"Factura de esta línea: {l['factura']}")
                 detalle = EntradaDetalle(
                     entrada=entrada,
                     producto=productos[(l["talla"], l["tipo"])],
                     proveedor_origen=proveedores[l["proveedor"]],
+                    factura=l["factura"][:50],
                     lote_general=lote_general,
                     lote_proveedor=l["lote_proveedor"][:50],
                     camara=camaras[l["camara"]],

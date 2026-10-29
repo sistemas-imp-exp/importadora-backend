@@ -14,8 +14,7 @@ from collections import defaultdict
 from decimal import Decimal
 from io import BytesIO
 
-from django.db.models import DecimalField, F, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import F
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
@@ -26,7 +25,8 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Table, TableStyle
 
-from .models import EntradaDetalle, Producto
+from .formatos import FORMATO_KG, kg
+from .models import EntradaDetalle, Producto, kilos_salidos
 
 CERO = Decimal("0")
 VERDE = "1F7A1F"  # encabezados, como en el formato del área
@@ -58,13 +58,7 @@ def lotes_con_existencia(fecha, camara_id=None, empresa_id=None):
         EntradaDetalle.objects
         .filter(entrada__fecha__lte=fecha, camara__isnull=False)
         .select_related("camara", "producto", "proveedor_origen")
-        .annotate(
-            kilos_salidos=Coalesce(
-                Sum("salidas_detalle__total_kilos", filter=Q(salidas_detalle__salida__fecha__lte=fecha)),
-                Value(CERO),
-                output_field=DecimalField(max_digits=12, decimal_places=2),
-            ),
-        )
+        .annotate(kilos_salidos=kilos_salidos(salidas_detalle__salida__fecha__lte=fecha))
         .annotate(kilos_a_fecha=F("total_kilos") - F("kilos_salidos"))
         .filter(kilos_a_fecha__gt=0)
     )
@@ -143,7 +137,7 @@ def filas_planas(bloque):
 def serializar_reporte(reporte):
     """Decimales a texto para JSON (el front los formatea)."""
     def num(valor):
-        return str(valor.quantize(Decimal("0.01")))
+        return str(valor.quantize(Decimal("0.001")))
 
     return [
         {
@@ -185,8 +179,8 @@ def serializar_reporte(reporte):
 
 
 def _peso(valor):
-    """18.00 -> "18", 18.50 -> "18.5": el formato del área muestra el peso master sin decimales de más."""
-    return f"{valor.normalize():f}" if valor == valor.to_integral() else f"{valor:.2f}".rstrip("0")
+    """18.000 -> "18", 9.072 -> "9.072": el formato del área muestra el peso master sin decimales de más."""
+    return f"{valor.normalize():f}" if valor == valor.to_integral() else f"{valor:.3f}".rstrip("0")
 
 
 # ---------------------------------------------------------------- PDF
@@ -235,15 +229,15 @@ def construir_pdf(reporte, fecha, subtitulo=""):
                     p(fila["proveedor"]),
                     p(_peso(fila["peso_por_caja"]), TA_CENTER),
                     p(f"{fila['cajas']:,}", TA_RIGHT),
-                    p(f"{fila['kilos']:,.2f}", TA_RIGHT),
-                    p(f"{talla['existencia']:,.2f}", TA_RIGHT) if prim_talla else "",
+                    p(kg(fila['kilos']), TA_RIGHT),
+                    p(kg(talla['existencia']), TA_RIGHT) if prim_talla else "",
                 ])
                 if prim_talla and span_t > 1:
                     estilos += [("SPAN", (0, r), (0, r + span_t - 1)), ("SPAN", (6, r), (6, r + span_t - 1))]
                 if prim_tipo and span_tp > 1:
                     estilos.append(("SPAN", (1, r), (1, r + span_tp - 1)))
-            filas.append(["", "", "", "", p("SUBTOTAL", TA_CENTER, negrita), p(f"{bloque['subtotal']:,.2f}", TA_RIGHT, negrita), ""])
-        filas.append(["", "", "", "", p("TOTAL", TA_CENTER, negrita), p(f"{camara['total']:,.2f}", TA_RIGHT, negrita), ""])
+            filas.append(["", "", "", "", p("SUBTOTAL", TA_CENTER, negrita), p(kg(bloque['subtotal']), TA_RIGHT, negrita), ""])
+        filas.append(["", "", "", "", p("TOTAL", TA_CENTER, negrita), p(kg(camara['total']), TA_RIGHT, negrita), ""])
 
         tabla = Table(filas, colWidths=anchos, repeatRows=2)
         tabla.setStyle(TableStyle(estilos))
@@ -298,7 +292,7 @@ def construir_excel(reporte, fecha, subtitulo=""):
             for talla, span_t, tipo, span_tp, fila, prim_talla, prim_tipo in filas_planas(bloque):
                 if prim_talla:
                     ws.cell(r, 1, talla["talla"]).alignment = centro
-                    ws.cell(r, 7, float(talla["existencia"])).number_format = "#,##0.00"
+                    ws.cell(r, 7, float(talla["existencia"])).number_format = FORMATO_KG
                     ws.cell(r, 7).alignment = Alignment(vertical="center")
                     if span_t > 1:
                         ws.merge_cells(start_row=r, start_column=1, end_row=r + span_t - 1, end_column=1)
@@ -310,14 +304,14 @@ def construir_excel(reporte, fecha, subtitulo=""):
                 ws.cell(r, 3, fila["proveedor"])
                 ws.cell(r, 4, float(fila["peso_por_caja"])).alignment = centro
                 ws.cell(r, 5, fila["cajas"]).number_format = "#,##0"
-                ws.cell(r, 6, float(fila["kilos"])).number_format = "#,##0.00"
+                ws.cell(r, 6, float(fila["kilos"])).number_format = FORMATO_KG
                 r += 1
             ws.cell(r, 5, "SUBTOTAL").font = negrita
-            ws.cell(r, 6, float(bloque["subtotal"])).number_format = "#,##0.00"
+            ws.cell(r, 6, float(bloque["subtotal"])).number_format = FORMATO_KG
             ws.cell(r, 6).font = negrita
             r += 1
         ws.cell(r, 5, "TOTAL").font = negrita
-        ws.cell(r, 6, float(camara["total"])).number_format = "#,##0.00"
+        ws.cell(r, 6, float(camara["total"])).number_format = FORMATO_KG
         ws.cell(r, 6).font = negrita
 
         for fila_celdas in ws.iter_rows(min_row=1, max_row=r, max_col=7):

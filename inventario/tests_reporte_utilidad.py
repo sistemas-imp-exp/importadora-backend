@@ -23,7 +23,7 @@ class ReporteUtilidadApiTests(APITestCase):
         self.camara = Camara.objects.create(nombre="CAM-U", tipo=Camara.TIPO_PROPIA)
         self.p1 = Producto.objects.create(talla="21-25", tipo="FREEZADO")
         self.p2 = Producto.objects.create(talla="26-30", tipo="FREEZADO")
-        entrada = Entrada.objects.create(fecha="2026-02-01", proveedor=self.proveedor, factura="F", empresa=empresa_importadora())
+        entrada = Entrada.objects.create(fecha="2026-02-01", empresa=empresa_importadora())
         self.lote1 = self._lote(entrada, self.p1, Decimal("100"))
         self.lote2 = self._lote(entrada, self.p2, None)  # sin costo
 

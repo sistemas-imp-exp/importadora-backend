@@ -2,8 +2,8 @@ from decimal import Decimal
 from io import BytesIO
 from xml.sax.saxutils import escape
 
-from django.db.models import DecimalField, F, IntegerField, Q, Sum, Value
-from django.db.models.functions import Cast, Coalesce, Floor
+from django.db.models import F, IntegerField, Q
+from django.db.models.functions import Cast, Floor
 from django.utils import timezone
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -14,8 +14,9 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from .formatos import FORMATO_KG, FORMATO_PRECIO_KG, kg, precio_kg
 from .caducidad import SIN_CADUCIDAD, clasificar_nivel, rango_de_nivel
-from .models import Camara, Empresa, EntradaDetalle
+from .models import Camara, Empresa, EntradaDetalle, kilos_salidos
 
 COLOR_ENCABEZADO = "0E6B6F"
 COLOR_ENCABEZADO_RL = colors.HexColor(f"#{COLOR_ENCABEZADO}")
@@ -53,14 +54,9 @@ def obtener_lotes_filtrados(params, ids_extra=None):
             # propósito: solo la recorren los lotes sin proveedor (los que
             # llegaron por un traslado), y arrastrarla sumaba ~40 columnas a
             # cada fila de una consulta que ya devuelve miles.
-            'entrada__proveedor', 'entrada__empresa',
+            'entrada__empresa',
         )
-        .annotate(
-            kilos_vendidos=Coalesce(
-                Sum('salidas_detalle__total_kilos'), Value(Decimal('0')),
-                output_field=DecimalField(max_digits=12, decimal_places=2),
-            ),
-        )
+        .annotate(kilos_vendidos=kilos_salidos())
         .annotate(
             kilos_disp=F('total_kilos') - F('kilos_vendidos'),
         )
@@ -126,14 +122,14 @@ def obtener_lotes_filtrados(params, ids_extra=None):
     busqueda = (params.get('busqueda') or '').strip()
     if busqueda:
         # Mismos campos que el buscador de la pantalla. Factura y recibo se
-        # buscan sobre la entrada propia del lote: para los lotes llegados por
+        # buscan sobre la línea propia del lote: para los lotes llegados por
         # traslado la pantalla muestra el documento del lote de origen, que se
         # resuelve recorriendo la cadena en Python y no es filtrable en SQL.
         lotes = lotes.filter(
             Q(producto__talla__icontains=busqueda)
             | Q(producto__tipo__icontains=busqueda)
             | Q(lote_proveedor__icontains=busqueda)
-            | Q(entrada__factura__icontains=busqueda)
+            | Q(factura__icontains=busqueda)
             | Q(lote_general__codigo__icontains=busqueda)
         )
 
@@ -310,10 +306,10 @@ def construir_libro_excel_lote(lotes):
         fila = ws.max_row
         ws.cell(row=fila, column=4).number_format = "DD/MM/YYYY"
         for col in (7, 9, 10, 11):
-            ws.cell(row=fila, column=col).number_format = "#,##0.00"
+            ws.cell(row=fila, column=col).number_format = FORMATO_KG
         ws.cell(row=fila, column=8).number_format = "#,##0"
-        for col in (12, 13):
-            ws.cell(row=fila, column=col).number_format = '"$"#,##0.00'
+        ws.cell(row=fila, column=12).number_format = FORMATO_PRECIO_KG
+        ws.cell(row=fila, column=13).number_format = '"$"#,##0.00'
 
     if filas:
         ws.append([
@@ -324,7 +320,7 @@ def construir_libro_excel_lote(lotes):
         for col in range(1, len(ENCABEZADOS_LOTE) + 1):
             ws.cell(row=fila, column=col).font = Font(bold=True)
         ws.cell(row=fila, column=8).number_format = "#,##0"
-        ws.cell(row=fila, column=11).number_format = "#,##0.00"
+        ws.cell(row=fila, column=11).number_format = FORMATO_KG
         ws.cell(row=fila, column=13).number_format = '"$"#,##0.00'
 
     anchos = [22, 18, 22, 13, 15, 15, 10, 11, 12, 12, 12, 12, 15, 22, 18]
@@ -406,7 +402,7 @@ def _encabezado_documento(titulo, filtros_descripcion):
         "generado", parent=ESTILOS["Normal"], fontSize=8, textColor=colors.HexColor("#999999"), spaceBefore=4,
     )
     elementos = [
-        Paragraph("Importadora y Exportadora de Mariscos", estilo_empresa),
+        Paragraph("Importadora y Exportadora de Mariscos de Centro América y el Caribe", estilo_empresa),
         Paragraph(titulo, estilo_titulo),
         Paragraph("Filtros: " + describir_filtros_texto(filtros_descripcion), estilo_subtitulo),
         Paragraph(
@@ -437,9 +433,6 @@ def construir_pdf_existencias_lote(lotes, filtros_descripcion):
     buffer, documento = _documento_base("Reporte de existencias")
     elementos = _encabezado_documento("Existencias", filtros_descripcion)
 
-    def kg(valor):
-        return f"{valor:,.2f}"
-
     def pesos(valor):
         return f"${valor:,.2f}" if valor is not None else "—"
 
@@ -461,7 +454,7 @@ def construir_pdf_existencias_lote(lotes, filtros_descripcion):
             _celda(kg(f["entrada_kg"]), TA_RIGHT),
             _celda(kg(f["salida_kg"]), TA_RIGHT),
             _celda(kg(f["saldo_kg"]), TA_RIGHT),
-            _celda(pesos(f["costo"]), TA_RIGHT),
+            _celda(precio_kg(f["costo"]) if f["costo"] is not None else "—", TA_RIGHT),
             _celda(pesos(f["total"]), TA_RIGHT),
             _celda(f["caducidad"], TA_CENTER),
             _celda(f["lote_proveedor"]),

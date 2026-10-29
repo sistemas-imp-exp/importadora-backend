@@ -62,11 +62,9 @@ class EntradaModelTests(TestCase):
 
     def test_entrada_detalle_a_resguardo_requiere_lote_proveedor_y_puede_agrupar_en_lote_general(self):
         entrada = Entrada.objects.create(
-            fecha="2026-01-05", proveedor=self.proveedor, factura="FACT 1070"
-        )
+            fecha="2026-01-05")
         lote_general = LoteGeneral.objects.create(
-            codigo="IMP1765", entrada=entrada, camara=self.camara, fecha_recibo="2026-01-05"
-        )
+            codigo="IMP1765", camara=self.camara, fecha_recibo="2026-01-05")
         detalle = EntradaDetalle.objects.create(
             entrada=entrada,
             producto=self.producto,
@@ -81,10 +79,10 @@ class EntradaModelTests(TestCase):
         )
 
         self.assertEqual(detalle.lote_general.codigo, "IMP1765")
-        self.assertEqual(detalle.entrada.proveedor, self.proveedor)
+        self.assertFalse(detalle.entrada.es_traslado)
 
     def test_entrada_detalle_de_venta_directa_no_requiere_lote_general_ni_camara(self):
-        entrada = Entrada.objects.create(fecha="2026-01-02", proveedor=self.proveedor)
+        entrada = Entrada.objects.create(fecha="2026-01-02")
         detalle = EntradaDetalle.objects.create(
             entrada=entrada,
             producto=self.producto,
@@ -99,7 +97,7 @@ class EntradaModelTests(TestCase):
         self.assertIsNone(detalle.costo_por_kilo)
 
     def test_lote_proveedor_vacio_es_rechazado_por_la_base_de_datos(self):
-        entrada = Entrada.objects.create(fecha="2026-01-02", proveedor=self.proveedor)
+        entrada = Entrada.objects.create(fecha="2026-01-02")
 
         with self.assertRaises(IntegrityError):
             EntradaDetalle.objects.create(
@@ -121,7 +119,7 @@ class CorregirPesoPorCajaMigracionTests(TestCase):
 
         proveedor = Proveedor.objects.create(nombre="CACESA")
         producto = Producto.objects.create(talla="30-40", tipo="FREEZADO")
-        entrada = Entrada.objects.create(fecha="2026-01-05", proveedor=proveedor)
+        entrada = Entrada.objects.create(fecha="2026-01-05")
         con_cajas = EntradaDetalle.objects.create(
             entrada=entrada, producto=producto, lote_proveedor="LOTE-1",
             cajas=3, peso_por_caja=Decimal("1.00"), total_kilos=Decimal("100.00"),
@@ -148,7 +146,7 @@ class SalidaModelTests(TestCase):
         self.camara = Camara.objects.create(nombre="IMPORTADORA", tipo=Camara.TIPO_PROPIA)
         self.producto = Producto.objects.create(talla="41-50", tipo="FREEZADO")
 
-        self.entrada = Entrada.objects.create(fecha="2026-01-05", proveedor=self.proveedor)
+        self.entrada = Entrada.objects.create(fecha="2026-01-05")
         self.lote_a = EntradaDetalle.objects.create(
             entrada=self.entrada,
             producto=self.producto,
@@ -228,7 +226,7 @@ class MovimientoCamaraModelTests(TestCase):
         camara_destino = Camara.objects.create(nombre="MEXIDELI", tipo=Camara.TIPO_PROPIA)
         producto = Producto.objects.create(talla="31-35", tipo="FREEZADO")
 
-        entrada_origen = Entrada.objects.create(fecha="2026-01-20", proveedor=proveedor)
+        entrada_origen = Entrada.objects.create(fecha="2026-01-20")
         lote_origen = EntradaDetalle.objects.create(
             entrada=entrada_origen,
             producto=producto,
@@ -251,7 +249,7 @@ class MovimientoCamaraModelTests(TestCase):
             total_kilos=Decimal("10000.00"),
         )
 
-        entrada_destino = Entrada.objects.create(fecha="2026-01-26", proveedor=proveedor)
+        entrada_destino = Entrada.objects.create(fecha="2026-01-26")
         lote_destino = EntradaDetalle.objects.create(
             entrada=entrada_destino,
             producto=producto,
@@ -282,7 +280,7 @@ class MovimientoCamaraModelTests(TestCase):
         camara_destino = Camara.objects.create(nombre="MEXIDELI2", tipo=Camara.TIPO_PROPIA)
         producto = Producto.objects.create(talla="61-70", tipo="FREEZADO")
 
-        entrada = Entrada.objects.create(fecha="2026-01-20", proveedor=proveedor)
+        entrada = Entrada.objects.create(fecha="2026-01-20")
         lote_1 = EntradaDetalle.objects.create(
             entrada=entrada, producto=producto, lote_proveedor="LOTE-1",
             camara=camara_origen, cajas=100, peso_por_caja=Decimal("10.00"),
@@ -304,7 +302,7 @@ class MovimientoCamaraModelTests(TestCase):
             camara=camara_origen, cajas=50, total_kilos=Decimal("500.00"),
         )
 
-        entrada_destino = Entrada.objects.create(fecha="2026-01-27", proveedor=proveedor)
+        entrada_destino = Entrada.objects.create(fecha="2026-01-27")
         lote_1_destino = EntradaDetalle.objects.create(
             entrada=entrada_destino, producto=producto, lote_proveedor="LOTE-1",
             camara=camara_destino, cajas=100, peso_por_caja=Decimal("10.00"),
@@ -365,11 +363,11 @@ class EntradaApiTests(APITestCase):
             {
                 "fecha": "2026-01-05",
                 "empresa_id": empresa_importadora().id,
-                "proveedor_id": self.proveedor.id,
-                "factura": "FACT 1070",
                 "detalles": [
                     {
                         "producto_id": self.producto.id,
+                        "proveedor_id": self.proveedor.id,
+                        "factura": "FACT 1070",
                         "lote_proveedor": "LOTE-TEST",
                         "camara": self.camara.id,
                         "cajas": 10,
@@ -395,12 +393,12 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "FACT 2001",
-            "pedimento": "",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "FACT 2001",
+                    "pedimento": "",
                     "lote_proveedor": "LOTE-A",
                     "camara": self.camara.id,
                     "cajas": 10,
@@ -409,6 +407,9 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
                 },
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "FACT 2001",
+                    "pedimento": "",
                     "lote_proveedor": "LOTE-B",
                     "camara": self.camara.id,
                     "cajas": 5,
@@ -427,9 +428,6 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "",
-            "pedimento": "",
             "detalles": [],
         }
         response = self.client.post("/api/inventario/entradas/", payload, format="json")
@@ -440,13 +438,13 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
             "es_internacional": True,
-            "factura": "FACT 3001",
-            "pedimento": "",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "FACT 3001",
+                    "pedimento": "",
                     "lote_proveedor": "LOTE-INTL",
                     "camara": self.camara.id,
                     "cajas": 10,
@@ -458,19 +456,19 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         response = self.client.post("/api/inventario/entradas/", payload, format="json")
 
         self.assertEqual(response.status_code, 400, response.data)
-        self.assertIn("pedimento", response.data)
+        self.assertIn("pedimento", response.data["detalles"][0])
 
     def test_entrada_nacional_sin_pedimento_se_crea(self):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
             "es_internacional": False,
-            "factura": "FACT 3002",
-            "pedimento": "",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "FACT 3002",
+                    "pedimento": "",
                     "lote_proveedor": "LOTE-NAL",
                     "camara": self.camara.id,
                     "cajas": 10,
@@ -487,11 +485,11 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "",
                     "lote_proveedor": "LOTE-SF",
                     "camara": self.camara.id,
                     "cajas": 10,
@@ -503,17 +501,17 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         response = self.client.post("/api/inventario/entradas/", payload, format="json")
 
         self.assertEqual(response.status_code, 400, response.data)
-        self.assertIn("factura", response.data)
+        self.assertIn("factura", response.data["detalles"][0])
 
     def test_textos_libres_se_normalizan_a_mayusculas(self):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "fact 3003",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "fact 3003",
                     "lote_proveedor": "lote-minusculas",
                     "camara": self.camara.id,
                     "cajas": 10,
@@ -526,19 +524,68 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         response = self.client.post("/api/inventario/entradas/", payload, format="json")
 
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(response.data["factura"], "FACT 3003")
+        self.assertEqual(response.data["detalles"][0]["factura"], "FACT 3003")
         self.assertEqual(response.data["detalles"][0]["lote_proveedor"], "LOTE-MINUSCULAS")
         self.assertEqual(response.data["detalles"][0]["observaciones"], "REVISAR CON CALMA")
 
-    def test_las_lineas_heredan_el_proveedor_de_la_entrada_como_proveedor_origen(self):
+    def _linea(self, proveedor, factura, lote, **extra):
+        return {
+            "producto_id": self.producto.id, "proveedor_id": proveedor.id, "factura": factura,
+            "lote_proveedor": lote, "camara": self.camara.id, "cajas": 10, "peso_por_caja": "9.072",
+            "total_kilos": "90.720", **extra,
+        }
+
+    def test_una_entrada_con_varios_proveedores_y_pedimento_por_linea(self):
+        otro = Proveedor.objects.create(nombre="CAMANICA")
+        payload = {
+            "fecha": "2026-02-01", "empresa_id": empresa_importadora().id, "es_internacional": True,
+            "detalles": [
+                self._linea(self.proveedor, "F-1", "L-1", pedimento="26 47 3523 6000101"),
+                self._linea(otro, "F-2", "L-2", pedimento=""),
+            ],
+        }
+        response = self.client.post("/api/inventario/entradas/", payload, format="json")
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(response.data["detalles"][0], {})
+        self.assertIn("pedimento", response.data["detalles"][1])
+
+        payload["detalles"][1]["pedimento"] = "26 47 3523 6000202"
+        response = self.client.post("/api/inventario/entradas/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        lineas = [(d["proveedor_origen"]["nombre"], d["factura"], d["peso_por_caja"]) for d in response.data["detalles"]]
+        self.assertEqual(lineas, [("CACESA", "F-1", "9.072"), ("CAMANICA", "F-2", "9.072")])
+
+    def test_un_recibo_agrupa_varias_entradas_de_la_misma_camara(self):
+        def crear(lote, camara=None):
+            return self.client.post("/api/inventario/entradas/", {
+                "fecha": "2026-02-01", "empresa_id": empresa_importadora().id, "recibo_ingreso": "imp-50",
+                "detalles": [self._linea(self.proveedor, "F-1", lote, camara=(camara or self.camara).id)],
+            }, format="json")
+
+        self.assertEqual(crear("L-1").status_code, 201)
+        self.assertEqual(crear("L-2").status_code, 201)
+        recibo = LoteGeneral.objects.get(codigo="IMP-50")
+        self.assertEqual(recibo.entradas_detalle.values("entrada").distinct().count(), 2)
+
+        otra = Camara.objects.create(nombre="OTRA3", tipo=Camara.TIPO_PROPIA)
+        response = crear("L-3", camara=otra)
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("recibo_ingreso", response.data)
+
+        # Borrar una de las entradas no se lleva el recibo que sigue usando la otra.
+        primera = recibo.entradas_detalle.order_by("id").first().entrada
+        self.assertEqual(self.client.delete(f"/api/inventario/entradas/{primera.id}/").status_code, 204)
+        self.assertTrue(LoteGeneral.objects.filter(codigo="IMP-50").exists())
+
+    def test_cada_linea_trae_su_proveedor(self):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "FACT 3005",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "FACT 3005",
                     "lote_proveedor": "LOTE-D",
                     "camara": self.camara.id,
                     "cajas": 10,
@@ -556,12 +603,12 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "FACT 3004",
             "recibo_ingreso": "imp-9999",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "FACT 3004",
                     "lote_proveedor": "LOTE-C",
                     "camara": self.camara.id,
                     "cajas": 10,
@@ -581,11 +628,11 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
         payload = {
             "fecha": "2026-02-01",
             "empresa_id": empresa_importadora().id,
-            "proveedor_id": self.proveedor.id,
-            "factura": "FACT 3006",
             "detalles": [
                 {
                     "producto_id": self.producto.id,
+                    "proveedor_id": self.proveedor.id,
+                    "factura": "FACT 3006",
                     "lote_proveedor": "LOTE-CERO",
                     "camara": self.camara.id,
                     "cajas": 10,
@@ -598,7 +645,7 @@ class EntradaCreacionAnidadaApiTests(APITestCase):
 
         self.assertEqual(response.status_code, 400, response.data)
         self.assertIn("detalles", response.data)
-        self.assertFalse(Entrada.objects.filter(factura="FACT 3006").exists())
+        self.assertFalse(Entrada.objects.exists())
 
 
 class SalidaCreacionAnidadaApiTests(APITestCase):
@@ -610,7 +657,7 @@ class SalidaCreacionAnidadaApiTests(APITestCase):
         self.camara = Camara.objects.create(nombre="IMPORTADORA4", tipo=Camara.TIPO_PROPIA)
         self.producto = Producto.objects.create(talla="90-110", tipo="FREEZADO")
 
-        entrada = Entrada.objects.create(fecha="2026-02-01", proveedor=self.proveedor)
+        entrada = Entrada.objects.create(fecha="2026-02-01")
         self.lote_a = EntradaDetalle.objects.create(
             entrada=entrada, producto=self.producto, lote_proveedor="LOTE-A",
             camara=self.camara, cajas=60, peso_por_caja="18.00", total_kilos="1080.00",
@@ -760,12 +807,12 @@ class MovimientoCamaraApiTests(APITestCase):
         self.camara_destino = Camara.objects.create(nombre="MEXIDELI", tipo=Camara.TIPO_PROPIA)
         self.producto = Producto.objects.create(talla="41-50", tipo="FREEZADO")
 
-        entrada = Entrada.objects.create(fecha="2026-02-01", proveedor=self.proveedor, factura="FACT 4001")
+        entrada = Entrada.objects.create(fecha="2026-02-01")
         self.lote_origen = EntradaDetalle.objects.create(
             entrada=entrada, producto=self.producto, lote_proveedor="LOTE-MOV",
             camara=self.camara_origen, cajas=100, peso_por_caja=Decimal("20.00"),
             total_kilos=Decimal("2000.00"),
-            proveedor_origen=self.proveedor, fecha_caducidad="2026-06-01",
+            proveedor_origen=self.proveedor, factura="FACT 4001", fecha_caducidad="2026-06-01",
         )
 
     def test_el_lote_destino_hereda_el_proveedor_de_origen_no_del_entrada_de_llegada(self):
@@ -784,7 +831,7 @@ class MovimientoCamaraApiTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.data)
         lote_destino = EntradaDetalle.objects.get(id=response.data["entrada_detalle_destino"])
         self.assertEqual(lote_destino.proveedor_origen_id, self.proveedor.id)
-        self.assertIsNone(lote_destino.entrada.proveedor_id)
+        self.assertTrue(lote_destino.entrada.es_traslado)
 
     def test_el_lote_destino_hereda_la_fecha_de_caducidad_del_lote_de_origen(self):
         payload = {
@@ -816,7 +863,7 @@ class MovimientoCamaraApiTests(APITestCase):
 
     def test_el_recibo_en_destino_se_guarda_sin_tocar_el_origen_y_deja_bitacora(self):
         LoteGeneral.objects.create(
-            codigo="IMP-ORIG", entrada=self.lote_origen.entrada, camara=self.camara_origen, fecha_recibo="2026-02-01",
+            codigo="IMP-ORIG", camara=self.camara_origen, fecha_recibo="2026-02-01",
         )
         EntradaDetalle.objects.filter(id=self.lote_origen.id).update(lote_general=LoteGeneral.objects.get(codigo="IMP-ORIG"))
         movimiento = self._mover()
@@ -831,7 +878,7 @@ class MovimientoCamaraApiTests(APITestCase):
         self.assertTrue(consultado["recibo_destino_propio"])
         self.lote_origen.refresh_from_db()
         self.assertEqual(self.lote_origen.lote_general.codigo, "IMP-ORIG")
-        self.assertEqual(self.lote_origen.entrada.factura, "FACT 4001")
+        self.assertEqual(self.lote_origen.factura, "FACT 4001")
         existencias = {e["detalle_id"]: e for e in self.client.get("/api/inventario/existencias/").data}
         destino = existencias[movimiento["entrada_detalle_destino"]]
         self.assertEqual((destino["recibo_ingreso"], destino["factura"]), ("IMP-DEST", "FACT 4001"))
@@ -849,8 +896,16 @@ class MovimientoCamaraApiTests(APITestCase):
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual((response.data["recibo_destino"], response.data["recibo_destino_propio"]), ("IMP-NUEVO", True))
         self.assertIsNone(EntradaDetalle.objects.get(id=self.lote_origen.id).lote_general_id)
-        repetido = self.client.post("/api/inventario/movimientos-camara/", {
+        # El mismo recibo en la misma cámara agrupa otra llegada; en otra cámara, no.
+        mismo = self.client.post("/api/inventario/movimientos-camara/", {
             "entrada_detalle_origen": self.lote_origen.id, "camara_destino": self.camara_destino.id,
+            "fecha": "2026-02-11", "cajas": 1, "total_kilos": "20.00", "recibo_destino": "IMP-NUEVO",
+        }, format="json")
+        self.assertEqual(mismo.status_code, 201, mismo.data)
+        self.assertEqual(LoteGeneral.objects.get(codigo="IMP-NUEVO").entradas_detalle.count(), 2)
+        otra = Camara.objects.create(nombre="OTRA", tipo=Camara.TIPO_TERCERO)
+        repetido = self.client.post("/api/inventario/movimientos-camara/", {
+            "entrada_detalle_origen": self.lote_origen.id, "camara_destino": otra.id,
             "fecha": "2026-02-11", "cajas": 1, "total_kilos": "20.00", "recibo_destino": "IMP-NUEVO",
         }, format="json")
         self.assertEqual(repetido.status_code, 400)
@@ -867,9 +922,9 @@ class MovimientoCamaraApiTests(APITestCase):
 
         self.assertEqual(
             (fila["kilos"], fila["proveedor"], fila["factura"], fila["fecha_caducidad"]),
-            ("800.00", "ACUAMAYA", "FACT 4001", "2026-06-01"),
+            ("800.000", "ACUAMAYA", "FACT 4001", "2026-06-01"),
         )
-        self.assertEqual((fila["cajas_disponibles_destino"], fila["kilos_disponibles_destino"]), (35, "700.00"))
+        self.assertEqual((fila["cajas_disponibles_destino"], fila["kilos_disponibles_destino"]), (35, "700.000"))
         self.assertEqual(fila["creado_por"]["username"], "tester5")
 
     def test_un_traslado_posterior_hereda_el_recibo_del_destino(self):
@@ -889,7 +944,7 @@ class MovimientoCamaraApiTests(APITestCase):
     def test_recibo_repetido_o_sin_dato_se_rechaza_y_solo_lectura_no_edita(self):
         movimiento = self._mover()
         LoteGeneral.objects.create(
-            codigo="IMP-USADO", entrada=self.lote_origen.entrada, camara=self.camara_origen, fecha_recibo="2026-02-01",
+            codigo="IMP-USADO", camara=self.camara_origen, fecha_recibo="2026-02-01",
         )
         self.assertEqual(self._recibo(movimiento["id"], "IMP-USADO").status_code, 400)
         self.assertEqual(
@@ -931,7 +986,7 @@ class AlertasCaducidadTests(TestCase):
         self.hoy = timezone.localdate()
 
     def _crear_lote(self, cajas, dias_para_caducar=None, cajas_vendidas=0):
-        entrada = Entrada.objects.create(fecha=self.hoy, proveedor=self.proveedor)
+        entrada = Entrada.objects.create(fecha=self.hoy)
         fecha_caducidad = self.hoy + timedelta(days=dias_para_caducar) if dias_para_caducar is not None else None
         # peso_por_caja=10.00: consistente con total_kilos=100.00 solo porque todas
         # las llamadas de este helper usan cajas=10 — si eso cambia, hay que ajustar
@@ -997,7 +1052,7 @@ class AlertasCaducidadApiTests(APITestCase):
 
     def test_endpoint_devuelve_totales_y_conteo_por_nivel(self):
         hoy = timezone.localdate()
-        entrada = Entrada.objects.create(fecha=hoy, proveedor=self.proveedor)
+        entrada = Entrada.objects.create(fecha=hoy)
         EntradaDetalle.objects.create(
             entrada=entrada, producto=self.producto, lote_proveedor="LOTE-Y",
             camara=self.camara, cajas=10, peso_por_caja=Decimal("10.00"),
@@ -1028,10 +1083,10 @@ class EmpresaEntradaApiTests(APITestCase):
     def _crear(self, empresa_id, factura):
         payload = {
             "fecha": "2026-09-01",
-            "proveedor_id": self.proveedor.id,
-            "factura": factura,
             "detalles": [{
                 "producto_id": self.producto.id, "lote_proveedor": f"L-{factura}",
+                "proveedor_id": self.proveedor.id,
+                "factura": factura,
                 "camara": self.camara.id, "cajas": 10, "peso_por_caja": "20.00", "total_kilos": "200.00",
             }],
         }
@@ -1052,7 +1107,7 @@ class EmpresaEntradaApiTests(APITestCase):
         self.assertEqual(creada.status_code, 201, creada.data)
         self.assertEqual(creada.data["empresa"]["nombre"], "MARISCOS SELECTOS")
         listado = self.client.get(f"/api/inventario/entradas/?empresa={self.selectos.id}")
-        self.assertEqual([e["factura"] for e in listado.data["results"]], ["F-SEL"])
+        self.assertEqual([e["detalles"][0]["factura"] for e in listado.data["results"]], ["F-SEL"])
 
     def test_existencias_y_traslados_respetan_la_empresa(self):
         self._crear(self.importadora.id, "F-IMP")
@@ -1090,7 +1145,7 @@ class EntradaEmpresaMigracionTests(TestCase):
     def test_asigna_importadora_a_las_entradas_existentes(self):
         from django.apps import apps
         migracion = importlib.import_module("inventario.migrations.0019_entrada_empresa")
-        entrada = Entrada.objects.create(fecha="2026-01-05", factura="VIEJA")
+        entrada = Entrada.objects.create(fecha="2026-01-05")
 
         migracion.crear_empresas_y_asignar(apps, None)
 
@@ -1104,7 +1159,7 @@ class QuitarEmpresaDuplicadaMigracionTests(TestCase):
         from django.apps import apps
         migracion = importlib.import_module("inventario.migrations.0020_quitar_empresa_duplicada")
         duplicada = Empresa.objects.create(nombre="IMPORTADORA DE MARISCOS")
-        entrada = Entrada.objects.create(fecha="2026-01-05", factura="X", empresa=duplicada)
+        entrada = Entrada.objects.create(fecha="2026-01-05", empresa=duplicada)
         camara = Camara.objects.create(nombre="CAM-DUP", tipo=Camara.TIPO_PROPIA, empresa=duplicada)
 
         migracion.quitar_duplicada(apps, None)
@@ -1126,12 +1181,12 @@ class ExcelTablasApiTests(APITestCase):
         camara = Camara.objects.create(nombre="CAM-XLS", tipo=Camara.TIPO_PROPIA)
         producto = Producto.objects.create(talla="21-25", tipo="FREEZADO")
         for fecha, factura in (("2026-03-01", "F-MAR"), ("2026-04-01", "F-ABR")):
-            entrada = Entrada.objects.create(fecha=fecha, proveedor=proveedor, factura=factura, empresa=empresa_importadora())
+            entrada = Entrada.objects.create(fecha=fecha, empresa=empresa_importadora())
             lote = EntradaDetalle.objects.create(
                 entrada=entrada, producto=producto, lote_proveedor=f"L-{factura}", camara=camara, cajas=10,
-                peso_por_caja=Decimal("20.00"), total_kilos=Decimal("200.00"), proveedor_origen=proveedor,
+                peso_por_caja=Decimal("20.00"), total_kilos=Decimal("200.00"), proveedor_origen=proveedor, factura=factura,
                 lote_general=LoteGeneral.objects.create(
-                    codigo=f"IMP-{factura[2:]}", entrada=entrada, camara=camara, fecha_recibo=fecha,
+                    codigo=f"IMP-{factura[2:]}", camara=camara, fecha_recibo=fecha,
                 ),
             )
         salida = Salida.objects.create(folio_de_salida="V-XLS", cliente=cliente, fecha="2026-04-05")
@@ -1154,7 +1209,7 @@ class ExcelTablasApiTests(APITestCase):
         self.assertEqual([f[3] for f in hojas["Entradas"][1:-1]], ["F-ABR"])
         self.assertEqual(hojas["Entradas"][-1][1], "Total (1 entradas)")
         self.assertEqual(hojas["Entradas"][1][12], "Sí")  # con salidas
-        self.assertEqual(hojas["Detalle"][1][6], "L-F-ABR")
+        self.assertEqual(hojas["Detalle"][1][7], "L-F-ABR")
 
     def test_salidas_con_totales_y_detalle(self):
         hojas = self._hojas("/api/inventario/salidas/excel/?busqueda=heray")

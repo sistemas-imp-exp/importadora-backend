@@ -2,6 +2,7 @@ from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 AREA_TESORERIA = "TES"
 AREA_INVENTARIO = "INV"
+AREA_CARTERA = "CAR"
 AREA_ADMIN = "ADMIN"
 
 
@@ -44,3 +45,21 @@ class AreaTesoreria(TieneArea):
 class AreaInventario(TieneArea):
     area = AREA_INVENTARIO
 
+
+class AreaCartera(TieneArea):
+    area = AREA_CARTERA
+
+
+class AreaInventarioOCartera(BasePermission):
+    """Lo que comparten las dos áreas (Resguardos): basta una de ellas, con escritura para modificar."""
+
+    message = "No tienes acceso a esta área."
+
+    def has_permission(self, request, view):
+        escritura = request.method not in SAFE_METHODS
+        areas = (AREA_INVENTARIO, AREA_CARTERA)
+        if any(tiene_area(request.user, area, escritura=escritura) for area in areas):
+            return True
+        if escritura and any(tiene_area(request.user, area) for area in areas):
+            self.message = "Tu acceso a esta área es de solo lectura."
+        return False

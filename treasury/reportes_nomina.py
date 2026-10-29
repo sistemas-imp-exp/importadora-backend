@@ -248,7 +248,7 @@ def construir_pdf_nomina(detalles, resumen, resumen_banco, fecha_inicio, fecha_f
     )
 
     elementos = [
-        Paragraph("Importadora y Exportadora de Mariscos", estilo_empresa),
+        Paragraph("Importadora y Exportadora de Mariscos de Centro América y el Caribe", estilo_empresa),
         Paragraph("Reporte de nómina semanal", estilo_titulo),
         Paragraph(f"Del {fecha_inicio.strftime('%d/%m/%Y')} al {fecha_fin.strftime('%d/%m/%Y')}", estilo_subtitulo),
     ]
