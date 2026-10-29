@@ -324,7 +324,7 @@ def linea_venta(linea):
     return {
         'id': linea.id,
         'producto': producto_de(linea),
-        'lote': linea.entrada_detalle.lote_general.codigo if linea.entrada_detalle.lote_general_id else '',
+        'lote': linea.entrada_detalle.lote_general.codigo if linea.entrada_detalle_id and linea.entrada_detalle.lote_general_id else '',
         'camara': linea.camara.nombre if linea.camara_id else '',
         'cajas': linea.cajas,
         'kilos': str(linea.total_kilos),

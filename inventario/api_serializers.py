@@ -434,7 +434,7 @@ class SalidaDetalleNestedSerializer(serializers.ModelSerializer):
     # Datos del lote de origen publicados en la propia línea. Antes la tabla de
     # salidas los resolvía en el navegador recorriendo TODAS las entradas, que era
     # la razón por la que esa pantalla descargaba 2 MB extra.
-    lote_proveedor = serializers.CharField(source='entrada_detalle.lote_proveedor', read_only=True)
+    lote_proveedor = serializers.SerializerMethodField()
     proveedor_nombre = serializers.SerializerMethodField()
     # Diferencia que Cartera encontró contra la nota en papel y que Inventario
     # debe corregir; desaparece sola en cuanto se corrige la línea.
@@ -450,7 +450,9 @@ class SalidaDetalleNestedSerializer(serializers.ModelSerializer):
             'lote_proveedor', 'proveedor_nombre', 'aviso_cartera',
             'cajas_resguardo', 'kilos_resguardo', 'kilos_retirados', 'retiro_de',
         ]
-        read_only_fields = ['retiro_de']
+        # El resguardo lo fija SalidaSerializer: todo en una venta en resguardo, nada en una normal.
+        read_only_fields = ['retiro_de', 'cajas_resguardo', 'kilos_resguardo']
+        extra_kwargs = {'entrada_detalle': {'required': False, 'allow_null': True}}
 
     def get_kilos_retirados(self, obj) -> str:
         # SalidaViewSet trae los retiros con la línea; se suman aquí sin otra consulta.
@@ -468,8 +470,11 @@ class SalidaDetalleNestedSerializer(serializers.ModelSerializer):
             'fecha': verificacion.fecha,
         }
 
+    def get_lote_proveedor(self, obj) -> str:
+        return obj.entrada_detalle.lote_proveedor if obj.entrada_detalle_id else ''
+
     def get_proveedor_nombre(self, obj) -> str:
-        proveedor = obj.entrada_detalle.proveedor_origen
+        proveedor = obj.entrada_detalle.proveedor_origen if obj.entrada_detalle_id else None
         return proveedor.nombre if proveedor else '—'
 
     def validate_notas(self, value):
@@ -491,7 +496,7 @@ class SalidaSerializer(serializers.ModelSerializer):
         model = Salida
         fields = [
             'id', 'folio_de_salida', 'cliente', 'cliente_id', 'fecha', 'notas', 'detalles', 'creado_por',
-            'folio_retiro', 'venta_resguardo',
+            'folio_retiro', 'venta_resguardo', 'es_resguardo',
         ]
         read_only_fields = ['folio_retiro']
 
@@ -515,17 +520,27 @@ class SalidaSerializer(serializers.ModelSerializer):
         detalles = data.get('detalles')
         if not detalles:
             raise serializers.ValidationError({'detalles': 'Debe incluir al menos una línea.'})
-        # Sin folio solo si no sale nada de la cámara: todo se queda en resguardo.
+        # El tipo no cambia al editar: una venta en resguardo sigue siéndolo.
+        es_resguardo = self.instance.es_resguardo if self.instance else data.get('es_resguardo', False)
+        data['es_resguardo'] = es_resguardo
         folio = data.get('folio_de_salida', getattr(self.instance, 'folio_de_salida', None))
-        todo_en_resguardo = all(
-            item.get('kilos_resguardo', Decimal('0')) == item['total_kilos']
-            and item.get('cajas_resguardo', 0) == item['cajas']
-            for item in detalles
-        )
-        if not folio and not todo_en_resguardo:
-            raise serializers.ValidationError({
-                'folio_de_salida': 'El folio de salida es obligatorio cuando sale producto de la cámara.'
-            })
+        if es_resguardo:
+            # Por producto, sin lote y sin salida de cámara: todo queda en resguardo.
+            data['folio_de_salida'] = None
+            if data.get('cliente', getattr(self.instance, 'cliente', None)) is None:
+                raise serializers.ValidationError({'cliente_id': 'Una venta en resguardo es a un cliente.'})
+            for item in detalles:
+                item['entrada_detalle'] = None
+                item['cajas_resguardo'], item['kilos_resguardo'] = item['cajas'], item['total_kilos']
+                if item['total_kilos'] <= 0:
+                    raise serializers.ValidationError({'detalles': f"Captura los kilos de {item['producto']}."})
+        else:
+            if not folio:
+                raise serializers.ValidationError({'folio_de_salida': 'El folio de salida es obligatorio.'})
+            for item in detalles:
+                if not item.get('entrada_detalle'):
+                    raise serializers.ValidationError({'detalles': 'Cada producto debe salir de un lote.'})
+                item['cajas_resguardo'], item['kilos_resguardo'] = 0, Decimal('0')
         if self.instance and self.instance.folio_retiro:
             raise serializers.ValidationError({
                 'detalles': 'Es un retiro de resguardo: se cancela y se vuelve a registrar desde Resguardos.'
@@ -540,7 +555,7 @@ class SalidaSerializer(serializers.ModelSerializer):
         cajas_ya_reservadas = {}
         kilos_ya_reservados = {}
         if self.instance:
-            for linea in self.instance.detalles.all():
+            for linea in self.instance.detalles.exclude(entrada_detalle=None):
                 cajas_ya_reservadas[linea.entrada_detalle_id] = (
                     cajas_ya_reservadas.get(linea.entrada_detalle_id, 0) + linea.cajas - linea.cajas_resguardo
                 )
@@ -554,6 +569,8 @@ class SalidaSerializer(serializers.ModelSerializer):
         lotes = {}
         for item in detalles:
             lote = item['entrada_detalle']
+            if lote is None:
+                continue  # venta en resguardo: no sale de ningún lote
             lotes[lote.id] = lote
             cajas_solicitadas[lote.id] = (
                 cajas_solicitadas.get(lote.id, 0) + item['cajas'] - item.get('cajas_resguardo', 0)
@@ -590,17 +607,7 @@ class SalidaSerializer(serializers.ModelSerializer):
         return data
 
     def _validar_resguardo(self, data, detalles):
-        """Lo resguardado cabe en la línea, es de una venta a cliente y no baja de lo ya retirado."""
-        cliente = data.get('cliente', getattr(self.instance, 'cliente', None))
-        for item in detalles:
-            kilos, cajas = item.get('kilos_resguardo', Decimal('0')), item.get('cajas_resguardo', 0)
-            if kilos < 0 or kilos > item['total_kilos'] or cajas > item['cajas']:
-                raise serializers.ValidationError({
-                    'detalles': f"Lo que queda en resguardo de {item['producto']} no puede ser más que lo vendido."
-                })
-            if (kilos or cajas) and cliente is None:
-                raise serializers.ValidationError({'detalles': 'Solo una venta a un cliente puede dejar producto en resguardo.'})
-
+        """En una venta en resguardo ya entregada en parte, ninguna línea baja de lo ya retirado."""
         if not self.instance:
             return
         # Una línea cuyo resguardo ya se empezó a entregar no se quita, no cambia
@@ -619,12 +626,14 @@ class SalidaSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         detalles_data = validated_data.pop('detalles')
+        if validated_data.get('es_resguardo'):
+            # Las notas de venta siempre son de IMPORTADORA; sin lote no hay de dónde tomarla.
+            validated_data['empresa'] = Empresa.objects.filter(nombre='IMPORTADORA').first()
         with transaction.atomic():
             salida = Salida.objects.create(**validated_data)
             for item in detalles_data:
                 item.pop('id', None)
-                item['factura_proveedor'] = self._factura_del_lote(item['entrada_detalle'])
-                item['camara'] = item['entrada_detalle'].camara
+                self._datos_del_lote(item)
                 SalidaDetalle.objects.create(salida=salida, **item)
         return salida
 
@@ -647,8 +656,7 @@ class SalidaSerializer(serializers.ModelSerializer):
 
             for item in detalles_data:
                 linea_id = item.pop('id', None)
-                item['factura_proveedor'] = self._factura_del_lote(item['entrada_detalle'])
-                item['camara'] = item['entrada_detalle'].camara
+                self._datos_del_lote(item)
                 if linea_id:
                     SalidaDetalle.objects.filter(id=linea_id, salida=instance).update(**item)
                 else:
@@ -661,6 +669,13 @@ class SalidaSerializer(serializers.ModelSerializer):
     @staticmethod
     def _factura_del_lote(entrada_detalle):
         return entrada_detalle.documento_origen['factura']
+
+    @classmethod
+    def _datos_del_lote(cls, item):
+        """Cámara y factura heredadas del lote (vacías en una venta en resguardo)."""
+        lote = item['entrada_detalle']
+        item['factura_proveedor'] = cls._factura_del_lote(lote) if lote else ''
+        item['camara'] = lote.camara if lote else None
 
 
 class MovimientoCamaraSerializer(serializers.ModelSerializer):

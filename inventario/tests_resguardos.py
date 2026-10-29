@@ -1,4 +1,4 @@
-"""Resguardos: venta que deja producto guardado y retiros desde Inventario o Cartera."""
+"""Resguardos: venta por producto que el cliente deja guardada y retiros desde Inventario o Cartera."""
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -38,14 +38,15 @@ class ResguardoTests(APITestCase):
             proveedor_origen=Proveedor.objects.get_or_create(nombre=proveedor)[0], factura=f"F-{proveedor}",
         )
 
-    def _vender(self, resguardo_kg="600", resguardo_cajas=30):
+    def _vender(self, nota="1559/24B", kilos="1000", cajas=50):
+        """Venta en resguardo: por producto, sin lote ni folio de salida."""
         self.client.force_authenticate(user=self.almacen)
         respuesta = self.client.post("/api/inventario/salidas/", {
-            "folio_de_salida": "SI5349", "cliente_id": self.cliente.id, "fecha": "2026-10-10", "notas": "1559/24B",
+            "es_resguardo": True, "folio_de_salida": "", "cliente_id": self.cliente.id, "fecha": "2026-10-10",
+            "notas": nota,
             "detalles": [{
-                "producto_id": self.producto.id, "entrada_detalle": self.lote_a.id, "cajas": 50,
-                "total_kilos": "1000", "precio_x_kilo": "150", "total_venta": "150000",
-                "cajas_resguardo": resguardo_cajas, "kilos_resguardo": resguardo_kg,
+                "producto_id": self.producto.id, "cajas": cajas, "total_kilos": kilos,
+                "precio_x_kilo": "150", "total_venta": str(Decimal(kilos) * 150),
             }],
         }, format="json")
         self.assertEqual(respuesta.status_code, 201, respuesta.data)
@@ -64,41 +65,52 @@ class ResguardoTests(APITestCase):
         fila = next(r for r in self.client.get(URL, {"estado": "todos"}).data["results"] if r["id"] == venta.id)
         return Decimal(fila["kilos_pendientes"])
 
-    def test_la_venta_cobra_todo_y_del_lote_solo_sale_lo_entregado(self):
+    def test_venta_en_resguardo_sin_lote_ni_folio_se_cobra_y_no_toca_existencias(self):
         venta = self._vender()
 
+        self.assertIsNone(venta.folio_de_salida)
+        self.assertEqual((venta.es_resguardo, venta.empresa.nombre), (True, "IMPORTADORA"))
+        linea = venta.detalles.get()
+        self.assertEqual((linea.entrada_detalle, linea.kilos_resguardo, linea.cajas_resguardo), (None, Decimal("1000"), 50))
         self.lote_a.refresh_from_db()
-        self.assertEqual(self.lote_a.kilos_disponibles, Decimal("1600"))  # 2000 − (1000 − 600)
+        self.assertEqual(self.lote_a.kilos_disponibles, Decimal("2000"))
+        self.assertEqual(self._vender(nota="1560/24B").folio_de_salida, None)  # varias sin folio
+
         self.client.force_authenticate(user=self.cobranza)
         listado = self.client.get(URL).data
-        self.assertEqual((listado["count"], listado["kilos_pendientes"]), (1, "600.000"))
-        self.assertEqual(listado["results"][0]["lineas"][0]["kilos_pendientes"], "600.000")
-        # Cartera cobra la venta completa.
-        from cartera.ventas import importe, lineas_venta
-        self.assertEqual([importe(l) for l in lineas_venta()], [Decimal("150000")])
-        self.assertEqual(Salida.objects.get(pk=venta.pk).detalles.get().kilos_resguardo, Decimal("600"))
+        self.assertEqual((listado["count"], listado["kilos_pendientes"]), (2, "2000.000"))
+        # Cartera la cobra completa, en IMPORTADORA.
+        from cartera.ventas import empresa_de, importe, lineas_venta
+        self.assertEqual({(importe(l), empresa_de(l).nombre) for l in lineas_venta()}, {(Decimal("150000"), "IMPORTADORA")})
+        from cartera.saldos import saldos_por_cliente
+        self.assertEqual(saldos_por_cliente()[self.cliente.id][venta.empresa_id], Decimal("300000"))
 
-    def test_cartera_registra_un_retiro_de_otro_proveedor_y_avisa_a_inventario(self):
+    def test_un_retiro_junta_varios_lotes_y_proveedores_y_avisa(self):
         venta = self._vender()
         self.client.force_authenticate(user=self.cobranza)
-
-        respuesta = self._retirar(venta)
+        linea = venta.detalles.get()
+        respuesta = self.client.post(f"{URL}retiros/", {
+            "venta": venta.id, "fecha": "2026-10-15", "folio_de_salida": "SI6001", "notas": "1584/24B",
+            "detalles": [
+                {"retiro_de": linea.id, "entrada_detalle": self.lote_a.id, "cajas": 30, "total_kilos": "600"},
+                {"retiro_de": linea.id, "entrada_detalle": self.lote_b.id, "cajas": 10, "total_kilos": "200"},
+            ],
+        }, format="json")
         self.assertEqual(respuesta.status_code, 201, respuesta.data)
-        self.assertEqual((respuesta.data["folio_retiro"], respuesta.data["lineas"][0]["proveedor"]), ("RES-0001", "CAMANICA"))
+        self.assertEqual(respuesta.data["folio_retiro"], "RES-0001")
+        self.assertEqual({l["proveedor"] for l in respuesta.data["lineas"]}, {"ACUAMAYA", "CAMANICA"})
+        self.lote_a.refresh_from_db()
         self.lote_b.refresh_from_db()
-        self.assertEqual(self.lote_b.kilos_disponibles, Decimal("800"))
-        self.assertEqual(self._pendiente(venta), Decimal("400"))
+        self.assertEqual((self.lote_a.kilos_disponibles, self.lote_b.kilos_disponibles), (Decimal("1400"), Decimal("800")))
+        self.assertEqual(self._pendiente(venta), Decimal("200"))
         aviso = Notificacion.objects.get(evento="resguardo_retiro")
         self.assertEqual((aviso.area_origen.codigo, aviso.area_destino.codigo), ("CAR", "INV"))
+        self.assertIn("busqueda=1559/24B", aviso.enlace)
 
-        # El retiro no es otra venta para Cartera; el siguiente lleva el folio que sigue.
+        # El retiro no es otra venta para Cartera; el siguiente lleva el folio que sigue y entrega todo.
         from cartera.ventas import lineas_venta
         self.assertEqual(lineas_venta().count(), 1)
-        self.assertEqual(self._retirar(venta, folio="SI6002", lote=self.lote_a).data["folio_retiro"], "RES-0002")
-        self.assertEqual(self._pendiente(venta), Decimal("200"))
-
-        # Entregado completo: deja de estar pendiente.
-        self._retirar(venta, folio="SI6003")
+        self.assertEqual(self._retirar(venta, folio="SI6002").data["folio_retiro"], "RES-0002")
         self.assertEqual(self.client.get(URL).data["count"], 0)
         self.assertEqual(self.client.get(URL, {"estado": "entregado"}).data["results"][0]["estado"], "entregado")
 
@@ -106,14 +118,16 @@ class ResguardoTests(APITestCase):
         venta = self._vender()
         self.client.force_authenticate(user=self.almacen)
         casos = {
-            "más de lo pendiente": self._retirar(venta, kilos="700"),
+            "más de lo pendiente": self._retirar(venta, kilos="1100", cajas=50),
             "otro producto": self._retirar(venta, lote=self.lote_otro),
             "antes de la venta": self._retirar(venta, fecha="2026-10-01"),
-            "folio repetido": self._retirar(venta, folio="SI5349"),
+            "más cajas de las que tiene el lote": self._retirar(venta, kilos="1000", cajas=51),
         }
         for caso, respuesta in casos.items():
             with self.subTest(caso):
                 self.assertEqual(respuesta.status_code, 400, respuesta.data)
+        self._retirar(venta, folio="SI-REP")
+        self.assertEqual(self._retirar(venta, folio="SI-REP").status_code, 400)  # folio repetido
         otra = Salida.objects.create(folio_de_salida="SI9", cliente=self.cliente, fecha="2026-10-10", notas="X")
         self.assertEqual(self._retirar(otra, linea=venta.detalles.get()).status_code, 400)
 
@@ -122,73 +136,49 @@ class ResguardoTests(APITestCase):
         retiro = self._retirar(venta).data
         linea = venta.detalles.get()
 
-        payload = self.client.get(f"/api/inventario/salidas/{venta.id}/").data
-        detalle = {
-            "id": linea.id, "producto_id": self.producto.id, "entrada_detalle": self.lote_a.id, "cajas": 50,
-            "total_kilos": "1000", "kilos_resguardo": "100", "cajas_resguardo": 5,
-        }
-        cambio = {"folio_de_salida": payload["folio_de_salida"], "cliente_id": self.cliente.id,
-                  "fecha": payload["fecha"], "notas": payload["notas"], "detalles": [detalle]}
+        cambio = {"folio_de_salida": "", "cliente_id": self.cliente.id, "fecha": "2026-10-10", "notas": venta.notas,
+                  "detalles": [{"id": linea.id, "producto_id": self.producto.id, "cajas": 5, "total_kilos": "100"}]}
         self.assertEqual(self.client.put(f"/api/inventario/salidas/{venta.id}/", cambio, format="json").status_code, 400)
+        cambio["detalles"][0].update(cajas=40, total_kilos="800")
+        respuesta = self.client.put(f"/api/inventario/salidas/{venta.id}/", cambio, format="json")
+        self.assertEqual(respuesta.status_code, 200, respuesta.data)
+        self.assertTrue(respuesta.data["es_resguardo"])  # sigue siendo venta en resguardo
         self.assertEqual(self.client.delete(f"/api/inventario/salidas/{venta.id}/").status_code, 400)
         self.assertEqual(self.client.delete(f"/api/inventario/salidas/{retiro['id']}/").status_code, 400)
 
         self.assertEqual(self.client.delete(f"{URL}retiros/{retiro['id']}/").status_code, 204)
-        self.assertEqual(self._pendiente(venta), Decimal("600"))
+        self.assertEqual(self._pendiente(venta), Decimal("800"))
         self.assertTrue(Notificacion.objects.filter(evento="resguardo_retiro_cancelado").exists())
         self.assertEqual(self.client.delete(f"/api/inventario/salidas/{venta.id}/").status_code, 204)
 
-    def _venta_sin_folio(self, nota, resguardo_kg="1000", resguardo_cajas=50):
+    def test_la_salida_normal_exige_folio_y_lote_y_no_deja_resguardo(self):
         self.client.force_authenticate(user=self.almacen)
-        return self.client.post("/api/inventario/salidas/", {
-            "folio_de_salida": "", "cliente_id": self.cliente.id, "fecha": "2026-10-10", "notas": nota,
-            "detalles": [{
-                "producto_id": self.producto.id, "entrada_detalle": self.lote_a.id, "cajas": 50,
-                "total_kilos": "1000", "precio_x_kilo": "150", "total_venta": "150000",
-                "cajas_resguardo": resguardo_cajas, "kilos_resguardo": resguardo_kg,
-            }],
-        }, format="json")
-
-    def test_venta_completa_en_resguardo_no_lleva_folio_de_salida(self):
-        respuesta = self._venta_sin_folio("2001/26B")
+        base = {"cliente_id": self.cliente.id, "fecha": "2026-10-10", "notas": "N"}
+        linea = {"producto_id": self.producto.id, "entrada_detalle": self.lote_a.id, "cajas": 5, "total_kilos": "100",
+                 "kilos_resguardo": "100", "cajas_resguardo": 5}
+        sin_folio = self.client.post("/api/inventario/salidas/", {**base, "folio_de_salida": "", "detalles": [linea]}, format="json")
+        self.assertIn("folio_de_salida", sin_folio.data)
+        sin_lote = {**linea, "entrada_detalle": None}
+        self.assertEqual(self.client.post("/api/inventario/salidas/", {**base, "folio_de_salida": "S1", "detalles": [sin_lote]},
+                                          format="json").status_code, 400)
+        respuesta = self.client.post("/api/inventario/salidas/", {**base, "folio_de_salida": "S1", "detalles": [linea]}, format="json")
         self.assertEqual(respuesta.status_code, 201, respuesta.data)
-        self.assertIsNone(respuesta.data["folio_de_salida"])
-        # Varias ventas pueden quedarse sin folio (el folio es único solo cuando existe).
-        self.assertEqual(self._venta_sin_folio("2002/26B").status_code, 201)
+        self.assertEqual(respuesta.data["detalles"][0]["kilos_resguardo"], "0.000")  # se ignora
         self.lote_a.refresh_from_db()
-        self.assertEqual(self.lote_a.kilos_disponibles, Decimal("2000"))  # no salió nada
+        self.assertEqual(self.lote_a.kilos_disponibles, Decimal("1900"))
 
-        venta = Salida.objects.get(notas="2001/26B")
-        self.assertEqual(venta.clave_busqueda, "2001/26B")
-        fila = self.client.get(URL, {"busqueda": "2001/26B"}).data["results"][0]
-        self.assertEqual((fila["folio_de_salida"], fila["kilos_pendientes"]), (None, "1000.000"))
-        self.client.force_authenticate(user=self.cobranza)
-        self.assertEqual(self._retirar(venta, kilos="200").status_code, 201)
-        aviso = Notificacion.objects.get(evento="resguardo_retiro")
-        self.assertIn("busqueda=2001/26B", aviso.enlace)
-
-    def test_si_sale_algo_el_folio_es_obligatorio(self):
-        respuesta = self._venta_sin_folio("2003/26B", resguardo_kg="600", resguardo_cajas=30)
-        self.assertEqual(respuesta.status_code, 400, respuesta.data)
-        self.assertIn("folio_de_salida", respuesta.data)
-
-    def test_resguardo_mayor_a_lo_vendido_se_rechaza(self):
-        self.client.force_authenticate(user=self.almacen)
-        respuesta = self.client.post("/api/inventario/salidas/", {
-            "folio_de_salida": "SI1", "cliente_id": self.cliente.id, "fecha": "2026-10-10", "notas": "N",
-            "detalles": [{"producto_id": self.producto.id, "entrada_detalle": self.lote_a.id, "cajas": 5,
-                          "total_kilos": "100", "kilos_resguardo": "150"}],
-        }, format="json")
-        self.assertEqual(respuesta.status_code, 400, respuesta.data)
-
-    def test_utilidad_toma_el_costo_del_lote_de_cada_retiro(self):
+    def test_utilidad_espera_a_que_se_entregue_todo_y_toma_el_costo_de_cada_lote(self):
         venta = self._vender()
-        self._retirar(venta)  # 200 kg del lote B a $120
-        self.client.force_authenticate(user=get_user_model().objects.create_superuser("jefe", password="x"))
-        datos = self.client.get("/api/inventario/reportes/utilidad/", {"desde": "2026-10-01", "hasta": "2026-10-31"}).data
-        # Entregado 400 + pendiente 400 a $100 del lote A, más 200 a $120 del lote B.
-        self.assertEqual(Decimal(datos["resumen"]["costo"]), Decimal("104000.00"))
-        self.assertEqual(datos["resumen"]["lineas"], 1)
+        self._retirar(venta, kilos="400", cajas=20)  # 400 kg del lote B a $120
+        jefe = get_user_model().objects.create_superuser("jefe", password="x")
+        self.client.force_authenticate(user=jefe)
+        params = {"desde": "2026-10-01", "hasta": "2026-10-31"}
+        datos = self.client.get("/api/inventario/reportes/utilidad/", params).data
+        self.assertEqual(datos["resumen"]["incompletas"], 1)  # lo pendiente aún no tiene costo
+
+        self._retirar(venta, kilos="600", cajas=30, lote=self.lote_a, folio="SI6002")  # 600 kg a $100
+        datos = self.client.get("/api/inventario/reportes/utilidad/", params).data
+        self.assertEqual(Decimal(datos["resumen"]["costo"]), Decimal("108000.00"))
 
     def test_lotes_para_el_retiro_y_clientes_del_filtro(self):
         self._vender()

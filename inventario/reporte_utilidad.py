@@ -15,6 +15,7 @@ from collections import defaultdict
 from decimal import Decimal
 from io import BytesIO
 
+from django.db.models import Q
 from openpyxl import Workbook
 from openpyxl.styles import Font
 from reportlab.lib import colors
@@ -71,7 +72,10 @@ def lineas_vendidas(filtros):
         .order_by("salida__fecha", "salida__folio_de_salida", "id")
     )
     if filtros.get("empresa"):
-        lineas = lineas.filter(entrada_detalle__entrada__empresa_id=filtros["empresa"])
+        lineas = lineas.filter(
+            Q(entrada_detalle__entrada__empresa_id=filtros["empresa"])
+            | Q(entrada_detalle__isnull=True, salida__empresa_id=filtros["empresa"])
+        )
     if filtros.get("cliente"):
         lineas = lineas.filter(salida__cliente_id=filtros["cliente"])
     if filtros.get("proveedor"):
@@ -94,7 +98,8 @@ def _costo(d):
     pendiente = d.kilos_resguardo - sum((r.total_kilos for r in retiros), Decimal("0"))
     partes = [(d.total_kilos - d.kilos_resguardo + pendiente, d.entrada_detalle)]
     partes += [(r.total_kilos, r.entrada_detalle) for r in retiros]
-    if any(kilos and lote.costo_por_kilo is None for kilos, lote in partes):
+    # Venta en resguardo sin entregar todo: lo pendiente aún no tiene lote ni costo.
+    if any(kilos and (lote is None or lote.costo_por_kilo is None) for kilos, lote in partes):
         return None
     return sum((kilos * lote.costo_por_kilo for kilos, lote in partes if kilos), Decimal("0")).quantize(Decimal("0.01"))
 
@@ -129,7 +134,7 @@ def _linea(d):
         "cliente": d.salida.cliente.nombre,
         "producto_id": d.producto_id,
         "producto": f"{d.producto.talla} {d.producto.tipo}",
-        "lote": lote.lote_proveedor if lote else "—",
+        "lote": lote.lote_proveedor if lote else "Resguardo",
         "proveedor_id": lote.proveedor_origen_id if lote else None,
         "proveedor": lote.proveedor_origen.nombre if lote and lote.proveedor_origen_id else "—",
         "camara": d.camara.nombre if d.camara_id else "—",

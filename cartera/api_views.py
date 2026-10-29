@@ -29,7 +29,7 @@ from .api_serializers import (
 from .avisos import avisar_diferencias
 from .estado_cuenta import estado_de_cuenta, saldos_de_clientes
 from .models import AjusteCliente, PagoCliente, SaldoInicialCliente, VerificacionVenta
-from .ventas import PENDIENTE, SIN_PRECIO, estado, huella, importe, lineas_venta
+from .ventas import PENDIENTE, SIN_PRECIO, estado, filtro_empresa, huella, importe, lineas_venta
 from .reportes import (
     construir_excel_estado_cuenta,
     construir_excel_saldos,
@@ -173,7 +173,7 @@ class ClienteCarteraViewSet(
         if hasta:
             lineas = lineas.filter(salida__fecha__lte=hasta)
         if params.get('empresa'):
-            lineas = lineas.filter(entrada_detalle__entrada__empresa_id=params['empresa'])
+            lineas = lineas.filter(filtro_empresa(params['empresa']))
         filtro_estado = params.get('estado')
         if filtro_estado:
             lineas = [linea for linea in lineas if estado(linea)[0] == filtro_estado]

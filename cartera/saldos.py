@@ -41,7 +41,9 @@ def saldos_por_cliente(clientes=None, hasta=None):
     ):
         monto = importe(linea)
         if monto is not None:
-            saldos[linea.salida.cliente_id][linea.entrada_detalle.entrada.empresa_id] += monto
+            # Una venta en resguardo no tiene lote: la empresa es la de la venta.
+            empresa_id = linea.entrada_detalle.entrada.empresa_id if linea.entrada_detalle_id else linea.salida.empresa_id
+            saldos[linea.salida.cliente_id][empresa_id] += monto
 
     ajustes = _filtrar(AjusteCliente.objects.filter(cancelado=False), clientes, hasta)
     for fila in ajustes.values('cliente_id', 'empresa_id', 'naturaleza').annotate(total=Sum('monto')):

@@ -10,6 +10,8 @@ vuelve a estar pendiente.
 """
 from decimal import Decimal
 
+from django.db.models import Q
+
 from inventario.models import SalidaDetalle
 
 from .models import VerificacionVenta
@@ -25,7 +27,7 @@ def lineas_venta(clientes=None, hasta=None):
     queryset = (
         SalidaDetalle.objects.filter(salida__cliente__isnull=False, retiro_de__isnull=True)
         .select_related(
-            'salida__cliente', 'producto', 'camara', 'entrada_detalle__lote_general', 'entrada_detalle__proveedor_origen',
+            'salida__cliente', 'salida__empresa', 'producto', 'camara', 'entrada_detalle__lote_general', 'entrada_detalle__proveedor_origen',
             'entrada_detalle__entrada__empresa', 'verificacion_cartera__usuario',
         )
         .order_by('salida__fecha', 'salida__folio_de_salida', 'id')
@@ -88,7 +90,13 @@ def estado(linea):
 
 
 def empresa_de(linea):
-    return linea.entrada_detalle.entrada.empresa
+    """La del lote; una venta en resguardo (sin lote) lleva la suya."""
+    return linea.entrada_detalle.entrada.empresa if linea.entrada_detalle_id else linea.salida.empresa
+
+
+def filtro_empresa(empresa_id):
+    """Q de las líneas de venta de una empresa (por el lote, o por la venta si no tiene lote)."""
+    return Q(entrada_detalle__entrada__empresa_id=empresa_id) | Q(entrada_detalle__isnull=True, salida__empresa_id=empresa_id)
 
 
 def producto_de(linea):

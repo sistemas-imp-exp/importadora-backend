@@ -379,10 +379,18 @@ class EntradaDetalle(models.Model):
 
 
 class Salida(models.Model):
-    # Folio de la salida de cámara. Vacío solo en una venta que se quedó
-    # completa en resguardo: no salió ni un kilo, así que no hubo salida física
-    # (lo que se entregue después lleva el folio de su retiro).
+    # Folio de la salida de cámara. Vacío solo en una venta en resguardo: no
+    # sale nada de cámara (lo que se entregue después lleva el folio de su retiro).
     folio_de_salida = models.CharField(max_length=30, unique=True, null=True, blank=True)
+    # Venta en resguardo: el cliente compra producto (por producto, sin lote) que
+    # se queda guardado; se cobra completo y se entrega con retiros, del lote que
+    # haya. Sus líneas no tienen lote ni descuentan existencias.
+    es_resguardo = models.BooleanField(default=False)
+    # Empresa de la venta cuando no hay lote del que tomarla (venta en resguardo:
+    # las notas siempre son de IMPORTADORA). En una venta normal sale del lote.
+    empresa = models.ForeignKey(
+        Empresa, on_delete=models.PROTECT, related_name='salidas', null=True, blank=True,
+    )
     cliente = models.ForeignKey(
         Cliente,
         on_delete=models.PROTECT,
@@ -419,8 +427,8 @@ class Salida(models.Model):
 
     @property
     def referencia(self):
-        """Cómo nombrar la salida en textos: su folio, o su nota si no salió de cámara."""
-        return self.folio_de_salida or f'Nota {self.notas} (sin salida, todo en resguardo)'
+        """Cómo nombrar la salida en textos: su folio, o su nota si es venta en resguardo."""
+        return self.folio_de_salida or f'Nota {self.notas} (venta en resguardo)'
 
     @property
     def clave_busqueda(self):
@@ -439,8 +447,9 @@ class SalidaDetalle(models.Model):
     producto = models.ForeignKey(
         Producto, on_delete=models.PROTECT, related_name='salidas_detalle'
     )
+    # Lote del que sale. Vacío en una venta en resguardo (se vende por producto).
     entrada_detalle = models.ForeignKey(
-        EntradaDetalle, on_delete=models.PROTECT, related_name='salidas_detalle'
+        EntradaDetalle, on_delete=models.PROTECT, related_name='salidas_detalle', null=True, blank=True,
     )
     camara = models.ForeignKey(
         Camara,
@@ -459,9 +468,9 @@ class SalidaDetalle(models.Model):
         max_digits=12, decimal_places=2, null=True, blank=True
     )
     notas = models.CharField(max_length=200, blank=True)
-    # Resguardo: parte de lo vendido que el cliente deja guardado en la cámara.
-    # Se cobra completo, pero del lote solo sale lo entregado (total − resguardo);
-    # lo resguardado se entrega después con retiros, de este u otro proveedor.
+    # Resguardo: lo vendido que el cliente deja guardado (en una venta en
+    # resguardo, todo: cajas/kilos = los de la línea). Se cobra completo y se
+    # entrega después con retiros, del lote que haya de ese producto.
     cajas_resguardo = models.PositiveIntegerField(default=0)
     kilos_resguardo = models.DecimalField(max_digits=15, decimal_places=3, default=Decimal('0'))
     # En un retiro: la línea de venta cuyo resguardo entrega (mismo producto).
