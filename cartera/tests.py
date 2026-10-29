@@ -533,3 +533,23 @@ class UtilidadRealTests(BaseCartera):
         from security.permissions import AREA_INVENTARIO
         self.client.force_authenticate(user=crear_usuario_con_area("almacen", AREA_INVENTARIO))
         self.assertEqual(self.client.get(self.URL).status_code, 403)
+
+
+class ReportePagosTests(BaseCartera):
+    def test_pdf_y_excel_con_los_filtros_de_la_pantalla(self):
+        self._pago("300")
+        cancelado = self._pago("50").data
+        self.client.post(f"/api/cartera/pagos/{cancelado['id']}/cancelar/", {"motivo": "Duplicado"}, format="json")
+        params = {"desde": (HOY - timedelta(days=1)).isoformat(), "hasta": HOY.isoformat(), "por_identificar": "false"}
+
+        pdf = self.client.get("/api/cartera/pagos/pdf/", params)
+        self.assertEqual((pdf.status_code, pdf["Content-Type"]), (200, "application/pdf"))
+        hoja = load_workbook(BytesIO(self.client.get("/api/cartera/pagos/excel/", params).content))["Pagos de clientes"]
+        filas = list(hoja.iter_rows(values_only=True))
+        self.assertEqual(filas[0][:5], ("Fecha", "Cliente", "Empresa", "Tipo", "Monto"))
+        self.assertEqual(sum(1 for f in filas if f[1] == "CABEZA DE TORO"), 2)
+        self.assertEqual(next(f for f in filas if f[1] == "Total (activos)")[4], 300)  # el cancelado no suma
+        self.assertIn("Pagos identificados", [f[0] for f in filas])
+        # Solo activos: el cancelado ya no sale.
+        hoja = load_workbook(BytesIO(self.client.get("/api/cartera/pagos/excel/", {**params, "estado": "activo"}).content)).active
+        self.assertEqual(sum(1 for f in hoja.iter_rows(values_only=True) if f[1] == "CABEZA DE TORO"), 1)

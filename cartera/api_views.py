@@ -32,8 +32,10 @@ from .models import AjusteCliente, PagoCliente, SaldoInicialCliente, Verificacio
 from .ventas import PENDIENTE, SIN_PRECIO, estado, filtro_empresa, huella, importe, lineas_venta
 from .reportes import (
     construir_excel_estado_cuenta,
+    construir_excel_pagos,
     construir_excel_saldos,
     construir_pdf_estado_cuenta,
+    construir_pdf_pagos,
     construir_pdf_saldos,
 )
 from .saldos import fecha_corte, por_identificar, saldos_por_cliente, ultimos_pagos
@@ -268,6 +270,37 @@ class PagoClienteViewSet(MovimientoCarteraViewSet):
             )
         return queryset
 
+    def _filtros_texto(self):
+        """Los filtros aplicados, en texto, para el encabezado del PDF y el pie del Excel."""
+        params = self.request.query_params
+        textos = []
+        desde, hasta = parse_date(params.get('desde') or ''), parse_date(params.get('hasta') or '')
+        if desde or hasta:
+            textos.append(f"Periodo: {desde.strftime('%d/%m/%Y') if desde else 'inicio'} al "
+                          f"{hasta.strftime('%d/%m/%Y') if hasta else 'hoy'}")
+        if params.get('por_identificar') is not None:
+            textos.append('Pagos por identificar' if _verdadero(params['por_identificar']) else 'Pagos identificados')
+        if params.get('tipo'):
+            textos.append(f"Tipo: {dict(PagoCliente.TIPO_CHOICES).get(params['tipo'], params['tipo'])}")
+        if params.get('empresa'):
+            empresa = Empresa.objects.filter(pk=params['empresa']).first()
+            textos.append(f"Empresa: {empresa.nombre if empresa else params['empresa']}")
+        if params.get('estado') in ('activo', 'cancelado'):
+            textos.append('Solo activos' if params['estado'] == 'activo' else 'Solo cancelados')
+        if (params.get('q') or '').strip():
+            textos.append(f"Búsqueda: {params['q'].strip()}")
+        return textos
+
+    @action(detail=False, methods=['get'])
+    def pdf(self, request):
+        """Los pagos de la pantalla (mismos filtros) en PDF."""
+        contenido = construir_pdf_pagos(list(self.get_queryset()), self._filtros_texto()).getvalue()
+        return _descarga(contenido, 'application/pdf', 'pagos_clientes.pdf')
+
+    @action(detail=False, methods=['get'])
+    def excel(self, request):
+        """Los pagos de la pantalla (mismos filtros) en Excel."""
+        return _excel(construir_excel_pagos(list(self.get_queryset()), self._filtros_texto()), 'pagos_clientes.xlsx')
 
     @action(detail=True, methods=['post'])
     def identificar(self, request, pk=None):

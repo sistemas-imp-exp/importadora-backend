@@ -277,3 +277,102 @@ def construir_excel_saldos(empresas, filas, sin_identificar=None):
         ws.column_dimensions[ws.cell(row=1, column=c).column_letter].width = 17
     ws.freeze_panes = 'B2'
     return wb
+
+
+# --- Pagos de clientes ------------------------------------------------------
+
+COLUMNAS_PAGOS = ['Fecha', 'Cliente', 'Empresa', 'Tipo', 'Monto', 'Referencia', 'Capturó', 'Estado']
+
+
+def _fila_pago(pago):
+    return [
+        pago.fecha,
+        pago.cliente.nombre if pago.cliente_id else 'POR IDENTIFICAR',
+        pago.empresa.nombre,
+        pago.get_tipo_display(),
+        pago.monto,
+        pago.referencia or '',
+        pago.usuario.username if pago.usuario_id else '',
+        f'Cancelado: {pago.motivo_cancelacion}' if pago.cancelado else 'Activo',
+    ]
+
+
+def construir_pdf_pagos(pagos, filtros):
+    """Los pagos de la pantalla con sus filtros; los cancelados en gris y fuera del total."""
+    buffer = BytesIO()
+    documento = _documento(buffer, 'Pagos de clientes', horizontal=True)
+    estilos = _estilos()
+    elementos = [
+        Paragraph('Importadora y Exportadora de Mariscos de Centro América y el Caribe', estilos['empresa']),
+        Paragraph('Pagos de clientes', estilos['titulo']),
+        *[Paragraph(escape(f), estilos['subtitulo']) for f in filtros],
+        Paragraph(_generado(), estilos['generado']),
+        Spacer(1, 0.4 * cm),
+    ]
+    filas = [COLUMNAS_PAGOS]
+    extra = []
+    total = Decimal('0')
+    for pago in pagos:
+        fecha, cliente, empresa, tipo, monto, referencia, usuario, estado = _fila_pago(pago)
+        c = pago.cancelado
+        filas.append([
+            _celda_detalle(fecha.strftime('%d/%m/%Y'), TA_CENTER, c), _celda_detalle(cliente, TA_LEFT, c),
+            _celda_detalle(empresa, TA_LEFT, c), _celda_detalle(tipo, TA_LEFT, c),
+            _celda_detalle(_dinero(monto), TA_RIGHT, c), _celda_detalle(referencia, TA_LEFT, c),
+            _celda_detalle(usuario, TA_LEFT, c), _celda_detalle(estado, TA_LEFT, c),
+        ])
+        if c:
+            extra.append(('BACKGROUND', (0, len(filas) - 1), (-1, len(filas) - 1), COLOR_FILA_CANCELADA_RL))
+        else:
+            total += monto
+    if len(filas) == 1:
+        filas.append(['', 'Sin pagos con estos filtros.', '', '', '', '', '', ''])
+    activos = sum(1 for p in pagos if not p.cancelado)
+    filas.append(['', f'Total ({activos} pago(s) activos)', '', '', _dinero(total), '', '', ''])
+    ultima = len(filas) - 1
+    anchos = [2.2, 6.0, 3.4, 3.8, 2.8, 5.0, 2.0, 3.6]
+    tabla = Table(filas, colWidths=[a * cm for a in anchos], repeatRows=1)
+    tabla.setStyle(_estilo_tabla(extra + [
+        ('FONTNAME', (0, ultima), (-1, ultima), 'Helvetica-Bold'),
+        ('ALIGN', (4, ultima), (4, ultima), 'RIGHT'),
+        ('BACKGROUND', (0, ultima), (-1, ultima), colors.HexColor('#EEF5F5')),
+    ]))
+    elementos.append(tabla)
+    documento.build(elementos, onFirstPage=_pie_pagina_pdf, onLaterPages=_pie_pagina_pdf)
+    buffer.seek(0)
+    return buffer
+
+
+def construir_excel_pagos(pagos, filtros):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Pagos de clientes'
+    ws.append(COLUMNAS_PAGOS)
+    _estilizar_encabezado(ws, len(COLUMNAS_PAGOS))
+    gris = PatternFill('solid', fgColor=COLOR_FILA_CANCELADA)
+    tachado = Font(strike=True, color='808080')
+    total = Decimal('0')
+    for pago in pagos:
+        valores = _fila_pago(pago)
+        valores[4] = float(valores[4])
+        ws.append(valores)
+        fila = ws.max_row
+        ws.cell(row=fila, column=1).number_format = 'DD/MM/YYYY'
+        ws.cell(row=fila, column=5).number_format = FORMATO_DINERO
+        if pago.cancelado:
+            for col in range(1, len(COLUMNAS_PAGOS) + 1):
+                ws.cell(row=fila, column=col).font = tachado
+                ws.cell(row=fila, column=col).fill = gris
+        else:
+            total += pago.monto
+    ws.append([None, 'Total (activos)', None, None, float(total)])
+    ws.cell(row=ws.max_row, column=2).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
+    ws.cell(row=ws.max_row, column=5).number_format = FORMATO_DINERO
+    ws.append([])
+    for f in filtros:
+        ws.append([f])
+    for col, ancho in zip('ABCDEFGH', (12, 36, 20, 26, 15, 40, 14, 30)):
+        ws.column_dimensions[col].width = ancho
+    ws.freeze_panes = 'A2'
+    return wb
