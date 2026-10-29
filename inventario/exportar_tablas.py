@@ -112,7 +112,7 @@ def libro_salidas(salidas):
         sin_precio = sum(1 for d in lineas if not d.total_venta)
         cliente = s.cliente.nombre if s.cliente_id else "—"
         resumen.append([
-            s.fecha, s.folio_de_salida, cliente, s.notas or "", len(lineas), cajas,
+            s.fecha, s.folio_de_salida or "Sin salida (resguardo)", cliente, s.notas or "", len(lineas), cajas,
             _numero(kilos), _numero(venta) if venta else None, sin_precio or None,
         ])
         tot_cajas += cajas
@@ -121,7 +121,7 @@ def libro_salidas(salidas):
         for d in lineas:
             origen = d.entrada_detalle
             detalle.append([
-                s.fecha, s.folio_de_salida, cliente, f"{d.producto.talla} {d.producto.tipo}",
+                s.fecha, s.folio_de_salida or "Sin salida (resguardo)", cliente, f"{d.producto.talla} {d.producto.tipo}",
                 origen.lote_proveedor if origen else "—",
                 origen.proveedor_origen.nombre if origen and origen.proveedor_origen_id else "—",
                 d.camara.nombre if d.camara_id else "—",

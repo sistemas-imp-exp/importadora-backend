@@ -109,7 +109,7 @@ def resguardos(params=None):
 
 
 def _kg(valor):
-    return str(valor)
+    return str(Decimal(valor).quantize(Decimal('0.001')))
 
 
 def serializar_retiro(retiro):
@@ -143,6 +143,7 @@ def serializar_resguardo(venta, retiros_por_venta):
     return {
         'id': venta.id,
         'folio_de_salida': venta.folio_de_salida,
+        'referencia': venta.referencia,
         'notas': venta.notas,
         'fecha': venta.fecha.isoformat(),
         'cliente': {'id': venta.cliente_id, 'nombre': venta.cliente.nombre},
@@ -199,9 +200,9 @@ def _avisar(retiro, venta, usuario, cancelado=False):
     notificar(
         origen, destino, 'resguardo_retiro_cancelado' if cancelado else 'resguardo_retiro',
         f'{accion} {retiro.folio_retiro} · {venta.cliente.nombre}',
-        f'Venta {venta.folio_de_salida} (nota {venta.notas}) · {kilos.normalize():f} kg · '
+        f'Venta {venta.folio_de_salida or "sin salida"} (nota {venta.notas}) · {kilos.normalize():f} kg · '
         f'salida de cámara {retiro.folio_de_salida}, nota {retiro.notas}.',
-        f'{ruta}?busqueda={venta.folio_de_salida}',
+        f'{ruta}?busqueda={venta.clave_busqueda}',
         usuario,
     )
 

@@ -19,9 +19,9 @@ def avisar_diferencias(lineas, comentario, usuario):
     for salida, de_la_salida in por_salida.items():
         notificar(
             AREA_CARTERA, AREA_INVENTARIO, 'venta_diferencia',
-            f'Diferencia en la salida {salida.folio_de_salida}',
+            f'Diferencia en la salida {salida.referencia}',
             f'{salida.cliente.nombre} · {len(de_la_salida)} línea(s) no coinciden con la nota.\n{comentario}'.strip(),
-            f'/inventario/salidas?busqueda={salida.folio_de_salida}',
+            f'/inventario/salidas?busqueda={salida.clave_busqueda}',
             usuario,
         )
 
@@ -56,7 +56,7 @@ def avisar_correccion(salida, revisiones, usuario, eliminada=False):
     accion = 'eliminó' if eliminada else 'corrigió'
     notificar(
         AREA_INVENTARIO, AREA_CARTERA, 'salida_corregida',
-        f'Inventario {accion} la salida {salida.folio_de_salida}',
+        f'Inventario {accion} la salida {salida.referencia}',
         detalle,
         f'/cartera/clientes/{salida.cliente_id}',
         usuario,

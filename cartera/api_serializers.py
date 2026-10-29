@@ -347,7 +347,7 @@ def ventas_agrupadas(lineas):
         clave = (linea.salida_id, empresa.id)
         if clave not in salidas:
             salidas[clave] = {
-                'salida_id': linea.salida_id, 'folio_salida': linea.salida.folio_de_salida,
+                'salida_id': linea.salida_id, 'folio_salida': linea.salida.folio_de_salida or '',
                 'nota_salida': linea.salida.notas, 'fecha': linea.salida.fecha,
                 'empresa': {'id': empresa.id, 'nombre': empresa.nombre}, 'lineas': [], 'total': Decimal('0'),
             }

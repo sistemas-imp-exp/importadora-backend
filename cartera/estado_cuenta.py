@@ -71,7 +71,10 @@ def estado_de_cuenta(cliente, empresa=None):
         clave = (linea.salida_id, empresa_linea.id)
         if clave not in ventas:
             salida = linea.salida
-            referencia = f'Salida {salida.folio_de_salida}' + (f' · Nota {salida.notas}' if salida.notas else '')
+            if salida.folio_de_salida:
+                referencia = f'Salida {salida.folio_de_salida}' + (f' · Nota {salida.notas}' if salida.notas else '')
+            else:
+                referencia = f'Nota {salida.notas} · sin salida (todo en resguardo)'
             ventas[clave] = Renglon(
                 fecha=salida.fecha, tipo='venta', empresa=empresa_linea.nombre, referencia=referencia, concepto='',
                 cargo=CERO, abono=CERO, cancelado=False, motivo_cancelacion='', id=salida.id,
@@ -85,7 +88,7 @@ def estado_de_cuenta(cliente, empresa=None):
         proveedor = linea.entrada_detalle.proveedor_origen
         origen = '/'.join(filter(None, [linea.camara.nombre if linea.camara_id else '', proveedor.nombre if proveedor else '']))
         renglon.detalle.append({
-            'linea_id': linea.id, 'folio_salida': linea.salida.folio_de_salida, 'nota': linea.salida.notas,
+            'linea_id': linea.id, 'folio_salida': linea.salida.folio_de_salida or '', 'nota': linea.salida.notas,
             'origen': origen, 'producto': producto_de(linea),
             'kilos': linea.total_kilos, 'precio_kilo': linea.precio_x_kilo, 'importe': monto, 'estado': estado_linea,
         })

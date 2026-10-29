@@ -379,7 +379,10 @@ class EntradaDetalle(models.Model):
 
 
 class Salida(models.Model):
-    folio_de_salida = models.CharField(max_length=30, unique=True)
+    # Folio de la salida de cámara. Vacío solo en una venta que se quedó
+    # completa en resguardo: no salió ni un kilo, así que no hubo salida física
+    # (lo que se entregue después lleva el folio de su retiro).
+    folio_de_salida = models.CharField(max_length=30, unique=True, null=True, blank=True)
     cliente = models.ForeignKey(
         Cliente,
         on_delete=models.PROTECT,
@@ -412,7 +415,17 @@ class Salida(models.Model):
         indexes = [models.Index(fields=['-fecha'], name='salida_fecha_idx')]
 
     def __str__(self):
-        return self.folio_de_salida
+        return self.referencia
+
+    @property
+    def referencia(self):
+        """Cómo nombrar la salida en textos: su folio, o su nota si no salió de cámara."""
+        return self.folio_de_salida or f'Nota {self.notas} (sin salida, todo en resguardo)'
+
+    @property
+    def clave_busqueda(self):
+        """Lo que encuentra esta salida en los buscadores (enlaces de los avisos)."""
+        return self.folio_de_salida or self.notas
 
     @property
     def es_retiro(self):
@@ -468,7 +481,7 @@ class SalidaDetalle(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.salida.folio_de_salida} - {self.producto}"
+        return f"{self.salida.referencia} - {self.producto}"
 
 
 class MovimientoCamara(models.Model):

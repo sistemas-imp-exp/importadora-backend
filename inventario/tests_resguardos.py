@@ -138,6 +138,40 @@ class ResguardoTests(APITestCase):
         self.assertTrue(Notificacion.objects.filter(evento="resguardo_retiro_cancelado").exists())
         self.assertEqual(self.client.delete(f"/api/inventario/salidas/{venta.id}/").status_code, 204)
 
+    def _venta_sin_folio(self, nota, resguardo_kg="1000", resguardo_cajas=50):
+        self.client.force_authenticate(user=self.almacen)
+        return self.client.post("/api/inventario/salidas/", {
+            "folio_de_salida": "", "cliente_id": self.cliente.id, "fecha": "2026-10-10", "notas": nota,
+            "detalles": [{
+                "producto_id": self.producto.id, "entrada_detalle": self.lote_a.id, "cajas": 50,
+                "total_kilos": "1000", "precio_x_kilo": "150", "total_venta": "150000",
+                "cajas_resguardo": resguardo_cajas, "kilos_resguardo": resguardo_kg,
+            }],
+        }, format="json")
+
+    def test_venta_completa_en_resguardo_no_lleva_folio_de_salida(self):
+        respuesta = self._venta_sin_folio("2001/26B")
+        self.assertEqual(respuesta.status_code, 201, respuesta.data)
+        self.assertIsNone(respuesta.data["folio_de_salida"])
+        # Varias ventas pueden quedarse sin folio (el folio es único solo cuando existe).
+        self.assertEqual(self._venta_sin_folio("2002/26B").status_code, 201)
+        self.lote_a.refresh_from_db()
+        self.assertEqual(self.lote_a.kilos_disponibles, Decimal("2000"))  # no salió nada
+
+        venta = Salida.objects.get(notas="2001/26B")
+        self.assertEqual(venta.clave_busqueda, "2001/26B")
+        fila = self.client.get(URL, {"busqueda": "2001/26B"}).data["results"][0]
+        self.assertEqual((fila["folio_de_salida"], fila["kilos_pendientes"]), (None, "1000.000"))
+        self.client.force_authenticate(user=self.cobranza)
+        self.assertEqual(self._retirar(venta, kilos="200").status_code, 201)
+        aviso = Notificacion.objects.get(evento="resguardo_retiro")
+        self.assertIn("busqueda=2001/26B", aviso.enlace)
+
+    def test_si_sale_algo_el_folio_es_obligatorio(self):
+        respuesta = self._venta_sin_folio("2003/26B", resguardo_kg="600", resguardo_cajas=30)
+        self.assertEqual(respuesta.status_code, 400, respuesta.data)
+        self.assertIn("folio_de_salida", respuesta.data)
+
     def test_resguardo_mayor_a_lo_vendido_se_rechaza(self):
         self.client.force_authenticate(user=self.almacen)
         respuesta = self.client.post("/api/inventario/salidas/", {

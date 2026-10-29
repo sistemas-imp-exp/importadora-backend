@@ -124,7 +124,7 @@ def _linea(d):
     return {
         "salida_id": d.salida_id,
         "fecha": d.salida.fecha,
-        "folio": d.salida.folio_de_salida,
+        "folio": d.salida.folio_de_salida or f"Nota {d.salida.notas}",
         "cliente_id": d.salida.cliente_id,
         "cliente": d.salida.cliente.nombre,
         "producto_id": d.producto_id,

@@ -502,10 +502,11 @@ class SalidaSerializer(serializers.ModelSerializer):
         if not lineas:
             return None
         venta = lineas[0].retiro_de.salida
-        return {'id': venta.id, 'folio_de_salida': venta.folio_de_salida, 'notas': venta.notas}
+        return {'id': venta.id, 'folio_de_salida': venta.folio_de_salida, 'notas': venta.notas, 'referencia': venta.referencia}
 
     def validate_folio_de_salida(self, value):
-        return _mayusculas(value)
+        # Vacío se guarda como NULL: el folio es único, pero puede faltar en varias ventas.
+        return _mayusculas(value) or None
 
     def validate_notas(self, value):
         return _mayusculas(value)
@@ -514,6 +515,17 @@ class SalidaSerializer(serializers.ModelSerializer):
         detalles = data.get('detalles')
         if not detalles:
             raise serializers.ValidationError({'detalles': 'Debe incluir al menos una línea.'})
+        # Sin folio solo si no sale nada de la cámara: todo se queda en resguardo.
+        folio = data.get('folio_de_salida', getattr(self.instance, 'folio_de_salida', None))
+        todo_en_resguardo = all(
+            item.get('kilos_resguardo', Decimal('0')) == item['total_kilos']
+            and item.get('cajas_resguardo', 0) == item['cajas']
+            for item in detalles
+        )
+        if not folio and not todo_en_resguardo:
+            raise serializers.ValidationError({
+                'folio_de_salida': 'El folio de salida es obligatorio cuando sale producto de la cámara.'
+            })
         if self.instance and self.instance.folio_retiro:
             raise serializers.ValidationError({
                 'detalles': 'Es un retiro de resguardo: se cancela y se vuelve a registrar desde Resguardos.'
