@@ -12,6 +12,7 @@ from .api_views import (
     SaldoInicialViewSet,
     VerificarVentasView,
 )
+from .utilidad_views import CostosVentaView, GastosOperativosView, HistorialCostoView, UtilidadRealView
 
 router = DefaultRouter()
 router.register(r'empresas', EmpresaCarteraViewSet, basename='cartera-empresas')
@@ -27,5 +28,10 @@ urlpatterns = [
     path('reportes/saldos/', ReporteSaldosView.as_view()),
     path('reportes/saldos/pdf/', ReporteSaldosView.as_view(formato='pdf')),
     path('reportes/saldos/excel/', ReporteSaldosView.as_view(formato='excel')),
+    path('utilidad/', UtilidadRealView.as_view()),
+    path('utilidad/excel/', UtilidadRealView.as_view(formato='excel')),
+    path('utilidad/costos/', CostosVentaView.as_view()),
+    path('utilidad/costos/<int:linea_id>/historial/', HistorialCostoView.as_view()),
+    path('utilidad/gastos-operativos/', GastosOperativosView.as_view()),
     path('', include(router.urls)),
 ]

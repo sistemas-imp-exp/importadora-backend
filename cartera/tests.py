@@ -286,40 +286,45 @@ class CargarCarteraInicialTests(TestCase):
             self._correr()
 
 
+def _preparar_ventas(self):
+    """Lotes de IMPORTADORA y SELECTOS a $100/kg y salidas de prueba (ver VentasTests)."""
+    from inventario.models import Camara, Entrada, EntradaDetalle, LoteGeneral, Producto, Proveedor, Salida, SalidaDetalle
+    self.SalidaDetalle = SalidaDetalle
+    proveedor = Proveedor.objects.create(nombre="SAN LORENZO")
+    self.camara = Camara.objects.create(nombre="REMAINS", tipo=Camara.TIPO_PROPIA)
+    self.producto = Producto.objects.create(talla="41-50", tipo="FREEZADO")
+
+    def lote(empresa, codigo):
+        entrada = Entrada.objects.create(fecha=CORTE, empresa=empresa)
+        general = LoteGeneral.objects.create(codigo=codigo, camara=self.camara, fecha_recibo=CORTE)
+        return EntradaDetalle.objects.create(
+            entrada=entrada, producto=self.producto, lote_proveedor="L", camara=self.camara, cajas=50,
+            peso_por_caja=Decimal("20"), total_kilos=Decimal("1000"), costo_por_kilo=Decimal("100"),
+            proveedor_origen=proveedor, lote_general=general,
+        )
+
+    def salida(folio, lineas, cliente=None, fecha=HOY):
+        s = Salida.objects.create(folio_de_salida=folio, cliente=cliente or self.cliente, fecha=fecha, notas=f"N-{folio}")
+        return [SalidaDetalle.objects.create(salida=s, producto=self.producto, entrada_detalle=l, camara=self.camara,
+                                             cajas=1, total_kilos=Decimal(k), precio_x_kilo=p and Decimal(p),
+                                             total_venta=t and Decimal(t))
+                for l, k, p, t in lineas]
+
+    self.lote_imp, self.lote_sel = lote(self.imp, "IMP1"), lote(self.sel, "S-1")
+    # SAL-1: una línea con total capturado y otra solo con precio (kilos × precio).
+    self.l1, self.l2 = salida("SAL-1", [(self.lote_imp, "100", "130", "13000"), (self.lote_imp, "10", "125.5", None)])
+    self.l3, = salida("SAL-2", [(self.lote_sel, "20", "100", "2000")])
+    self.sin_precio, = salida("SAL-3", [(self.lote_imp, "5", None, None)])
+    salida("SAL-0", [(self.lote_imp, "999", "1", "999")], fecha=CORTE)  # ya en el saldo inicial
+    salida("SAL-9", [(self.lote_imp, "1", "1", "1")], cliente=Cliente.objects.create(nombre="OTRO"))
+
+
 class VentasTests(BaseCartera):
     """Las salidas de Inventario a cliente son las ventas; Cartera las verifica línea por línea."""
 
     def setUp(self):
         super().setUp()
-        from inventario.models import Camara, Entrada, EntradaDetalle, LoteGeneral, Producto, Proveedor, Salida, SalidaDetalle
-        self.SalidaDetalle = SalidaDetalle
-        proveedor = Proveedor.objects.create(nombre="SAN LORENZO")
-        self.camara = Camara.objects.create(nombre="REMAINS", tipo=Camara.TIPO_PROPIA)
-        self.producto = Producto.objects.create(talla="41-50", tipo="FREEZADO")
-
-        def lote(empresa, codigo):
-            entrada = Entrada.objects.create(fecha=CORTE, empresa=empresa)
-            general = LoteGeneral.objects.create(codigo=codigo, camara=self.camara, fecha_recibo=CORTE)
-            return EntradaDetalle.objects.create(
-                entrada=entrada, producto=self.producto, lote_proveedor="L", camara=self.camara, cajas=50,
-                peso_por_caja=Decimal("20"), total_kilos=Decimal("1000"), costo_por_kilo=Decimal("100"),
-                proveedor_origen=proveedor, lote_general=general,
-            )
-
-        def salida(folio, lineas, cliente=None, fecha=HOY):
-            s = Salida.objects.create(folio_de_salida=folio, cliente=cliente or self.cliente, fecha=fecha, notas=f"N-{folio}")
-            return [SalidaDetalle.objects.create(salida=s, producto=self.producto, entrada_detalle=l, camara=self.camara,
-                                                 cajas=1, total_kilos=Decimal(k), precio_x_kilo=p and Decimal(p),
-                                                 total_venta=t and Decimal(t))
-                    for l, k, p, t in lineas]
-
-        self.lote_imp, self.lote_sel = lote(self.imp, "IMP1"), lote(self.sel, "S-1")
-        # SAL-1: una línea con total capturado y otra solo con precio (kilos × precio).
-        self.l1, self.l2 = salida("SAL-1", [(self.lote_imp, "100", "130", "13000"), (self.lote_imp, "10", "125.5", None)])
-        self.l3, = salida("SAL-2", [(self.lote_sel, "20", "100", "2000")])
-        self.sin_precio, = salida("SAL-3", [(self.lote_imp, "5", None, None)])
-        salida("SAL-0", [(self.lote_imp, "999", "1", "999")], fecha=CORTE)  # ya en el saldo inicial
-        salida("SAL-9", [(self.lote_imp, "1", "1", "1")], cliente=Cliente.objects.create(nombre="OTRO"))
+        _preparar_ventas(self)
 
     def _ventas(self, **params):
         return self.client.get(f"/api/cartera/clientes/{self.cliente.id}/ventas/", params).data
@@ -475,3 +480,56 @@ class PagosPorIdentificarTests(BaseCartera):
         filas = [[c.value for c in fila][:4] for fila in hoja.iter_rows(min_row=2)]
         self.assertIn(["POR IDENTIFICAR", -5000, 0, -5000], filas)
         self.assertEqual(self.client.get("/api/cartera/reportes/saldos/pdf/").status_code, 200)
+
+
+class UtilidadRealTests(BaseCartera):
+    """Utilidad real: costo por venta capturado por Cartera y gasto operativo por kilo."""
+
+    URL = "/api/cartera/utilidad/"
+
+    def setUp(self):
+        super().setUp()
+        _preparar_ventas(self)
+
+    def _utilidad(self, **params):
+        return self.client.get(self.URL, {"desde": (CORTE + timedelta(days=1)).isoformat(), "hasta": HOY.isoformat(), **params}).data
+
+    def test_filas_y_resumen_con_el_costo_del_lote_y_4_por_kilo(self):
+        datos = self._utilidad()
+        fila = next(f for f in datos["filas"] if f["linea_id"] == self.l1.id)
+        self.assertEqual((fila["lote"], fila["nota"], fila["proveedor"], fila["costo_unitario"], fila["costo_capturado"]),
+                         ("IMP1", "N-SAL-1", "REMAINS/SAN LORENZO", "100.0000", False))
+        r = datos["resumen"]
+        # Completas: l1 13000−10000, l2 1255−1000, l3 2000−2000 y la de OTRO 1−100; sin precio aparte.
+        self.assertEqual((r["venta"], r["utilidad"], r["sin_precio"], r["costo_propuesto"]), ("16256.00", "3156.00", 1, 4))
+        self.assertEqual((r["kilos"], r["gasto_operativo"], r["utilidad_real"]), ("131.000", "524.00", "2632.00"))
+        self.assertEqual(datos["gasto_por_kilo"], "4.0000")
+
+    def test_cartera_captura_el_costo_por_venta_con_historial(self):
+        respuesta = self.client.post(f"{self.URL}costos/", {"costos": [{"linea_id": self.l1.id, "costo_unitario": "110"}]}, format="json")
+        self.assertEqual(respuesta.data["cambios"], 1)
+        r = self._utilidad()["resumen"]
+        self.assertEqual((r["utilidad"], r["utilidad_real"], r["costo_propuesto"]), ("2156.00", "1632.00", 3))
+        # Sin cambio no ensucia la bitácora; null vuelve al propuesto del lote.
+        self.client.post(f"{self.URL}costos/", {"costos": [{"linea_id": self.l1.id, "costo_unitario": "110"}]}, format="json")
+        self.client.post(f"{self.URL}costos/", {"costos": [{"linea_id": self.l1.id, "costo_unitario": None}]}, format="json")
+        historial = self.client.get(f"{self.URL}costos/{self.l1.id}/historial/").data
+        self.assertEqual([(h["anterior"], h["nuevo"]) for h in historial], [("110.0000", None), (None, "110.0000")])
+        self.assertEqual(self._utilidad()["resumen"]["utilidad"], "3156.00")
+
+    def test_un_gasto_nuevo_no_cambia_los_dias_anteriores(self):
+        self.client.post(f"{self.URL}gastos-operativos/", {"por_kilo": "5", "vigente_desde": (HOY + timedelta(days=1)).isoformat()}, format="json")
+        self.assertEqual(self._utilidad()["resumen"]["gasto_operativo"], "524.00")
+        self.client.post(f"{self.URL}gastos-operativos/", {"por_kilo": "5", "vigente_desde": HOY.isoformat()}, format="json")
+        self.assertEqual(self._utilidad()["resumen"]["gasto_operativo"], "655.00")
+
+    def test_excel_como_la_hoja_registro_y_permisos(self):
+        respuesta = self.client.get(f"{self.URL}excel/", {"desde": (CORTE + timedelta(days=1)).isoformat()})
+        hoja = load_workbook(BytesIO(respuesta.content))["Registro"]
+        self.assertEqual([c.value for c in hoja[1]][:4], ["Fecha", "LOTE", "Nota", "PROVEEDOR"])
+        self.assertTrue(any(f[5] == "Utilidad real" for f in hoja.iter_rows(values_only=True)))
+        self.assertEqual(self.client.post(f"{self.URL}costos/", {"costos": [{"linea_id": 999999, "costo_unitario": "1"}]},
+                                          format="json").status_code, 400)
+        from security.permissions import AREA_INVENTARIO
+        self.client.force_authenticate(user=crear_usuario_con_area("almacen", AREA_INVENTARIO))
+        self.assertEqual(self.client.get(self.URL).status_code, 403)

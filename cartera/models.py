@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
@@ -199,3 +200,50 @@ class VerificacionVenta(models.Model):
 
 
 CERO = Decimal('0')
+
+
+class CostoVenta(models.Model):
+    """
+    Costo unitario ($/kg) que Cartera asigna a una línea de venta para la
+    utilidad real, rastreando la factura del producto. Sin captura, la utilidad
+    propone el costo del lote. Cada cambio queda en CambioCostoVenta.
+    """
+    salida_detalle = models.OneToOneField(
+        SalidaDetalle, on_delete=models.CASCADE, primary_key=True, related_name='costo_cartera',
+    )
+    costo_unitario = models.DecimalField(max_digits=14, decimal_places=4, validators=[MinValueValidator(Decimal('0'))])
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    modificado = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.salida_detalle_id}: {self.costo_unitario}"
+
+
+class CambioCostoVenta(models.Model):
+    """Bitácora de los costos capturados: quién, cuándo, antes y después (vacío = propuesto del lote)."""
+    salida_detalle = models.ForeignKey(SalidaDetalle, on_delete=models.CASCADE, related_name='cambios_costo_cartera')
+    anterior = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    nuevo = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    fecha = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-fecha', '-id']
+
+
+class GastoOperativo(models.Model):
+    """
+    Gasto operativo por kilo vendido que la utilidad real resta a la bruta
+    (hoy $4/kg). Vale desde `vigente_desde` hasta el siguiente: cambiarlo no
+    recalcula los meses anteriores.
+    """
+    por_kilo = models.DecimalField(max_digits=10, decimal_places=4, validators=[MinValueValidator(Decimal('0'))])
+    vigente_desde = models.DateField(unique=True)
+    usuario = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+', null=True, blank=True)
+    creado = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-vigente_desde']
+
+    def __str__(self):
+        return f"${self.por_kilo}/kg desde {self.vigente_desde}"
