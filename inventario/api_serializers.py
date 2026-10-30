@@ -436,6 +436,7 @@ class SalidaDetalleNestedSerializer(serializers.ModelSerializer):
     # la razón por la que esa pantalla descargaba 2 MB extra.
     lote_proveedor = serializers.SerializerMethodField()
     proveedor_nombre = serializers.SerializerMethodField()
+    peso_por_caja = serializers.SerializerMethodField()
     # Diferencia que Cartera encontró contra la nota en papel y que Inventario
     # debe corregir; desaparece sola en cuanto se corrige la línea.
     aviso_cartera = serializers.SerializerMethodField()
@@ -447,7 +448,7 @@ class SalidaDetalleNestedSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'producto', 'producto_id', 'entrada_detalle', 'camara', 'cajas',
             'total_kilos', 'factura_proveedor', 'precio_x_kilo', 'total_venta', 'notas',
-            'lote_proveedor', 'proveedor_nombre', 'aviso_cartera',
+            'lote_proveedor', 'proveedor_nombre', 'peso_por_caja', 'aviso_cartera',
             'cajas_resguardo', 'kilos_resguardo', 'kilos_retirados', 'retiro_de',
         ]
         # El resguardo lo fija SalidaSerializer: todo en una venta en resguardo, nada en una normal.
@@ -472,6 +473,9 @@ class SalidaDetalleNestedSerializer(serializers.ModelSerializer):
 
     def get_lote_proveedor(self, obj) -> str:
         return obj.entrada_detalle.lote_proveedor if obj.entrada_detalle_id else ''
+
+    def get_peso_por_caja(self, obj) -> str | None:
+        return str(obj.entrada_detalle.peso_por_caja) if obj.entrada_detalle_id else None
 
     def get_proveedor_nombre(self, obj) -> str:
         proveedor = obj.entrada_detalle.proveedor_origen if obj.entrada_detalle_id else None
