@@ -381,7 +381,9 @@ class EntradaDetalle(models.Model):
 class Salida(models.Model):
     # Folio de la salida de cámara. Vacío solo en una venta en resguardo: no
     # sale nada de cámara (lo que se entregue después lleva el folio de su retiro).
-    folio_de_salida = models.CharField(max_length=30, unique=True, null=True, blank=True)
+    # Único entre salidas normales; un retiro puede repetirlo, porque una misma
+    # salida en papel lleva venta nueva y entrega de resguardo del mismo cliente.
+    folio_de_salida = models.CharField(max_length=30, null=True, blank=True)
     # Venta en resguardo: el cliente compra producto (por producto, sin lote) que
     # se queda guardado; se cobra completo y se entrega con retiros, del lote que
     # haya. Sus líneas no tienen lote ni descuentan existencias.
@@ -408,6 +410,9 @@ class Salida(models.Model):
     # Folio propio de un retiro de resguardo (RES-0001): la salida con la que el
     # cliente se lleva producto que dejó guardado al comprar. Vacío en las ventas.
     folio_retiro = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    # Retiro armado con líneas que ya estaban capturadas en una salida normal
+    # ("Ligar entrega ya capturada"): al cancelarlo regresan a esa salida.
+    entrega_ligada = models.BooleanField(default=False)
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -420,7 +425,16 @@ class Salida(models.Model):
 
     class Meta:
         ordering = ['-fecha']
-        indexes = [models.Index(fields=['-fecha'], name='salida_fecha_idx')]
+        indexes = [
+            models.Index(fields=['-fecha'], name='salida_fecha_idx'),
+            models.Index(fields=['folio_de_salida'], name='salida_folio_idx'),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['folio_de_salida'], condition=models.Q(folio_retiro__isnull=True),
+                name='salida_folio_unico_sin_retiros',
+            ),
+        ]
 
     def __str__(self):
         return self.referencia

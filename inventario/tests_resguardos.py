@@ -126,8 +126,12 @@ class ResguardoTests(APITestCase):
         for caso, respuesta in casos.items():
             with self.subTest(caso):
                 self.assertEqual(respuesta.status_code, 400, respuesta.data)
-        self._retirar(venta, folio="SI-REP")
-        self.assertEqual(self._retirar(venta, folio="SI-REP").status_code, 400)  # folio repetido
+        # El folio de cámara se puede repetir con el mismo cliente, no con otro.
+        self.assertEqual(self._retirar(venta, folio="SI-REP").status_code, 201)
+        self.assertEqual(self._retirar(venta, folio="SI-REP").status_code, 201)
+        ajeno = Cliente.objects.create(nombre="OTRO")
+        Salida.objects.create(folio_de_salida="SI-AJENO", cliente=ajeno, fecha="2026-10-10", notas="X")
+        self.assertEqual(self._retirar(venta, folio="SI-AJENO").status_code, 400)
         otra = Salida.objects.create(folio_de_salida="SI9", cliente=self.cliente, fecha="2026-10-10", notas="X")
         self.assertEqual(self._retirar(otra, linea=venta.detalles.get()).status_code, 400)
 
@@ -150,6 +154,80 @@ class ResguardoTests(APITestCase):
         self.assertEqual(self._pendiente(venta), Decimal("800"))
         self.assertTrue(Notificacion.objects.filter(evento="resguardo_retiro_cancelado").exists())
         self.assertEqual(self.client.delete(f"/api/inventario/salidas/{venta.id}/").status_code, 204)
+
+    def _salida_normal(self, folio="SI7000", con_venta=True):
+        """Salida de cámara capturada con la entrega del resguardo como línea sin precio (y una venta nueva)."""
+        self.client.force_authenticate(user=self.almacen)
+        detalles = [{"producto_id": self.producto.id, "entrada_detalle": self.lote_b.id, "cajas": 15, "total_kilos": "300"}]
+        if con_venta:
+            detalles.append({"producto_id": self.otro_producto.id, "entrada_detalle": self.lote_otro.id, "cajas": 5,
+                             "total_kilos": "100", "precio_x_kilo": "90", "total_venta": "9000"})
+        respuesta = self.client.post("/api/inventario/salidas/", {
+            "folio_de_salida": folio, "cliente_id": self.cliente.id, "fecha": "2026-10-12", "notas": "1590/24B",
+            "detalles": detalles,
+        }, format="json")
+        self.assertEqual(respuesta.status_code, 201, respuesta.data)
+        return Salida.objects.get(pk=respuesta.data["id"])
+
+    def _ligar(self, venta, salida):
+        entrega = salida.detalles.get(producto=self.producto)
+        return self.client.post(f"{URL}ligar/", {
+            "venta": venta.id, "folio_de_salida": salida.folio_de_salida.lower(),
+            "lineas": [{"linea": entrega.id, "retiro_de": venta.detalles.get().id}],
+        }, format="json")
+
+    def test_ligar_entrega_ya_capturada_en_una_salida_normal(self):
+        venta = self._vender()
+        salida = self._salida_normal()
+        self.lote_b.refresh_from_db()
+        disponible = self.lote_b.kilos_disponibles
+        self.client.force_authenticate(user=self.cobranza)
+
+        candidatas = self.client.get(f"{URL}entregas-capturadas/", {"venta": venta.id, "folio": "si7000"}).data
+        self.assertEqual([(c["producto"], c["kilos"], c["proveedor"]) for c in candidatas], [("60-70 FREEZADO", "300.000", "CAMANICA")])
+        # Registrarla como retiro nuevo la descontaría dos veces.
+        self.assertIn("Ligar", str(self._retirar(venta, folio="SI7000", kilos="300", cajas=15).data))
+
+        entrega = salida.detalles.get(producto=self.producto)
+        respuesta = self._ligar(venta, salida)
+        self.assertEqual(respuesta.status_code, 201, respuesta.data)
+        self.assertEqual((respuesta.data["folio_retiro"], respuesta.data["folio_de_salida"], respuesta.data["notas"]),
+                         ("RES-0001", "SI7000", "1590/24B"))
+        self.lote_b.refresh_from_db()
+        self.assertEqual(self.lote_b.kilos_disponibles, disponible)  # existencias igual
+        self.assertEqual(self._pendiente(venta), Decimal("700"))
+        self.assertEqual(list(salida.detalles.values_list("producto__talla", flat=True)), ["70-80"])  # queda la venta
+        from cartera.ventas import lineas_venta
+        self.assertEqual(lineas_venta().filter(producto=self.producto, entrada_detalle__isnull=False).count(), 0)
+        otra_vez = self.client.post(f"{URL}ligar/", {
+            "venta": venta.id, "folio_de_salida": "SI7000", "lineas": [{"linea": entrega.id, "retiro_de": venta.detalles.get().id}],
+        }, format="json")
+        self.assertEqual(otra_vez.status_code, 400)  # ya es retiro: no hay qué ligar
+
+        # Cancelarlo regresa la línea a su salida: el producto sí salió.
+        self.assertEqual(self.client.delete(f"{URL}retiros/{respuesta.data['id']}/").status_code, 204)
+        self.assertEqual(salida.detalles.count(), 2)
+        self.lote_b.refresh_from_db()
+        self.assertEqual((self.lote_b.kilos_disponibles, self._pendiente(venta)), (disponible, Decimal("1000")))
+
+    def test_ligar_toda_la_salida_la_vuelve_retiro_y_validaciones(self):
+        venta = self._vender()
+        salida = self._salida_normal(folio="SI7001", con_venta=False)
+        self.client.force_authenticate(user=self.almacen)
+        con_precio = self._salida_normal(folio="SI7002")
+        con_precio.detalles.filter(producto=self.producto).update(precio_x_kilo=Decimal("150"))
+        self.assertEqual(self._ligar(venta, con_precio).status_code, 400)  # con precio es venta, no entrega
+        grande = self._vender(nota="1600/24B", kilos="100", cajas=5)
+        self.assertEqual(self._ligar(grande, salida).status_code, 400)  # más de lo pendiente
+
+        self.assertEqual(self._ligar(venta, salida).status_code, 201)
+        self.assertFalse(Salida.objects.filter(pk=salida.pk).exists())
+        self.assertEqual(Salida.objects.filter(folio_de_salida="SI7001").count(), 1)
+        # Una salida normal nueva no puede repetir el folio de otra normal.
+        self.assertIn("folio_de_salida", self.client.post("/api/inventario/salidas/", {
+            "folio_de_salida": "SI7002", "cliente_id": self.cliente.id, "fecha": "2026-10-12", "notas": "N",
+            "detalles": [{"producto_id": self.producto.id, "entrada_detalle": self.lote_a.id, "cajas": 1, "total_kilos": "20"}],
+        }, format="json").data)
 
     def test_la_salida_normal_exige_folio_y_lote_y_no_deja_resguardo(self):
         self.client.force_authenticate(user=self.almacen)

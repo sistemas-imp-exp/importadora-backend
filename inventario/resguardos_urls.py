@@ -2,6 +2,8 @@ from django.urls import path
 
 from .resguardos_views import (
     ClientesConResguardoView,
+    EntregasCapturadasView,
+    LigarEntregasView,
     LotesParaRetiroView,
     ResguardosView,
     RetiroDetalleView,
@@ -12,6 +14,8 @@ urlpatterns = [
     path('', ResguardosView.as_view()),
     path('clientes/', ClientesConResguardoView.as_view()),
     path('lotes/', LotesParaRetiroView.as_view()),
+    path('entregas-capturadas/', EntregasCapturadasView.as_view()),
+    path('ligar/', LigarEntregasView.as_view()),
     path('retiros/', RetirosView.as_view()),
     path('retiros/<int:pk>/', RetiroDetalleView.as_view()),
 ]

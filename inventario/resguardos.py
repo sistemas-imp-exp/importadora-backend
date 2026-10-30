@@ -119,6 +119,7 @@ def serializar_retiro(retiro):
         'folio_retiro': retiro.folio_retiro,
         'folio_de_salida': retiro.folio_de_salida,
         'notas': retiro.notas,
+        'entrega_ligada': retiro.entrega_ligada,
         'fecha': retiro.fecha.isoformat(),
         'kilos': _kg(sum((l.total_kilos for l in lineas), CERO)),
         'cajas': sum(l.cajas for l in lineas),
@@ -226,8 +227,71 @@ def registrar_retiro(datos, usuario):
     return retiro
 
 
+def entregas_capturadas(venta, folio):
+    """
+    Líneas sin precio de la salida de cámara normal `folio` del cliente de la
+    venta, de productos que la venta tiene en resguardo: entregas que se
+    capturaron como salida normal y se pueden ligar como retiro.
+    """
+    return (
+        SalidaDetalle.objects.filter(
+            salida__folio_de_salida=folio, salida__folio_retiro__isnull=True, salida__es_resguardo=False,
+            salida__cliente=venta.cliente, entrada_detalle__isnull=False,
+            producto_id__in=venta.detalles.filter(kilos_resguardo__gt=0).values('producto_id'),
+        )
+        .filter(Q(precio_x_kilo__isnull=True) | Q(precio_x_kilo=0))
+        .select_related('salida', 'producto', 'entrada_detalle__proveedor_origen', 'camara')
+        .order_by('id')
+    )
+
+
+def _quitar_de_cartera(lineas):
+    """Una línea que pasa a retiro deja de ser venta: fuera su verificación y su costo de Cartera."""
+    from cartera.models import CostoVenta, VerificacionVenta
+    VerificacionVenta.objects.filter(salida_detalle__in=lineas).delete()
+    CostoVenta.objects.filter(salida_detalle__in=lineas).delete()
+
+
+@transaction.atomic
+def ligar_entregas(datos, usuario):
+    """
+    `datos` ya validados por LigarEntregaSerializer. Las líneas pasan de su
+    salida normal a un retiro nuevo con el mismo folio de cámara, fecha y nota:
+    conservan lote y kilos (las existencias no cambian) y dejan de ser venta.
+    Si la salida se queda sin líneas, se borra (su folio sigue en el retiro).
+    """
+    venta, salida = datos['venta'], datos['salida']
+    retiro = Salida.objects.create(
+        folio_de_salida=salida.folio_de_salida, cliente=salida.cliente, fecha=salida.fecha, notas=salida.notas,
+        folio_retiro=siguiente_folio(), entrega_ligada=True, creado_por=usuario,
+    )
+    lineas = [item['linea'] for item in datos['lineas']]
+    _quitar_de_cartera(lineas)
+    for item in datos['lineas']:
+        linea = item['linea']
+        linea.salida, linea.retiro_de = retiro, item['retiro_de']
+        linea.precio_x_kilo = linea.total_venta = None
+        linea.save(update_fields=['salida', 'retiro_de', 'precio_x_kilo', 'total_venta', 'modificado'])
+    if not salida.detalles.exists():
+        salida.delete()
+    _avisar(retiro, venta, usuario)
+    return retiro
+
+
 @transaction.atomic
 def cancelar_retiro(retiro, usuario):
+    """
+    Un retiro registrado se borra (su producto vuelve al lote). Uno ligado
+    regresa sus líneas a la salida normal de su folio: el producto sí salió.
+    """
     venta = retiro.detalles.select_related('retiro_de__salida__cliente').first().retiro_de.salida
     _avisar(retiro, venta, usuario, cancelado=True)
+    if retiro.entrega_ligada:
+        salida = Salida.objects.filter(
+            folio_de_salida=retiro.folio_de_salida, folio_retiro__isnull=True, cliente=retiro.cliente,
+        ).first() or Salida.objects.create(
+            folio_de_salida=retiro.folio_de_salida, cliente=retiro.cliente, fecha=retiro.fecha,
+            notas=retiro.notas, creado_por=retiro.creado_por,
+        )
+        retiro.detalles.update(salida=salida, retiro_de=None)
     retiro.delete()

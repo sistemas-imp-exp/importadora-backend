@@ -537,6 +537,12 @@ class SalidaSerializer(serializers.ModelSerializer):
         else:
             if not folio:
                 raise serializers.ValidationError({'folio_de_salida': 'El folio de salida es obligatorio.'})
+            # Único entre salidas normales (un retiro puede compartirlo: ver Salida.folio_de_salida).
+            otras = Salida.objects.filter(folio_de_salida=folio, folio_retiro__isnull=True)
+            if self.instance:
+                otras = otras.exclude(pk=self.instance.pk)
+            if otras.exists():
+                raise serializers.ValidationError({'folio_de_salida': 'Ya existe una salida con ese folio.'})
             for item in detalles:
                 if not item.get('entrada_detalle'):
                     raise serializers.ValidationError({'detalles': 'Cada producto debe salir de un lote.'})

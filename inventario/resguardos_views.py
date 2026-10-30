@@ -18,9 +18,15 @@ from .models import Cliente, EntradaDetalle, Salida, SalidaDetalle
 from .paginacion import PaginacionInventario
 from .reportes import obtener_lotes_filtrados
 from .resguardos import (
-    cancelar_retiro, lineas_con_retirado, registrar_retiro, resguardos, retiros_de, serializar_resguardo,
-    serializar_retiro,
+    _kg, cancelar_retiro, entregas_capturadas, ligar_entregas, lineas_con_retirado, registrar_retiro, resguardos,
+    retiros_de, serializar_resguardo, serializar_retiro,
 )
+
+VENTAS = Salida.objects.filter(cliente__isnull=False, folio_retiro__isnull=True).select_related('cliente')
+
+
+def _pendientes(venta):
+    return {l.id: l.kilos_resguardo - l.kilos_retirados for l in lineas_con_retirado().filter(salida=venta)}
 
 
 class RetiroLineaSerializer(serializers.Serializer):
@@ -31,9 +37,7 @@ class RetiroLineaSerializer(serializers.Serializer):
 
 
 class RetiroResguardoSerializer(serializers.Serializer):
-    venta = serializers.PrimaryKeyRelatedField(
-        queryset=Salida.objects.filter(cliente__isnull=False, folio_retiro__isnull=True).select_related('cliente'),
-    )
+    venta = serializers.PrimaryKeyRelatedField(queryset=VENTAS)
     fecha = serializers.DateField()
     # Folio de la salida de cámara y nota del retiro (documentos en papel).
     folio_de_salida = serializers.CharField(max_length=30)
@@ -41,22 +45,33 @@ class RetiroResguardoSerializer(serializers.Serializer):
     detalles = RetiroLineaSerializer(many=True)
 
     def validate_folio_de_salida(self, value):
-        folio = value.strip().upper()
-        if Salida.objects.filter(folio_de_salida=folio).exists():
-            raise serializers.ValidationError('Ya existe una salida con ese folio.')
-        return folio
+        return value.strip().upper()
 
     def validate_notas(self, value):
         return value.strip().upper()
 
     def validate(self, data):
         venta, detalles = data['venta'], data['detalles']
+        # El folio puede repetir el de otra salida del mismo cliente (venta y
+        # entrega en el mismo papel), nunca el de otro cliente.
+        if Salida.objects.filter(folio_de_salida=data['folio_de_salida']).exclude(cliente=venta.cliente).exists():
+            raise serializers.ValidationError({'folio_de_salida': 'Ese folio ya es de una salida de otro cliente.'})
+        # Si esa salida ya trae el producto sin precio, la entrega ya está
+        # capturada: registrar otro retiro la descontaría dos veces.
+        productos = {item['retiro_de'].producto_id for item in detalles}
+        if entregas_capturadas(venta, data['folio_de_salida']).filter(producto_id__in=productos).exists():
+            raise serializers.ValidationError({
+                'folio_de_salida': (
+                    f"La salida {data['folio_de_salida']} ya trae ese producto sin precio: "
+                    'usa "Ligar entrega ya capturada" en vez de registrar otro retiro.'
+                ),
+            })
         if not detalles:
             raise serializers.ValidationError({'detalles': 'Agrega al menos un producto a entregar.'})
         if data['fecha'] < venta.fecha:
             raise serializers.ValidationError({'fecha': 'El retiro no puede ser anterior a la venta.'})
 
-        pendientes = {l.id: l.kilos_resguardo - l.kilos_retirados for l in lineas_con_retirado().filter(salida=venta)}
+        pendientes = _pendientes(venta)
         por_linea, cajas_lote, kilos_lote, lotes = defaultdict(Decimal), defaultdict(int), defaultdict(Decimal), {}
         for item in detalles:
             linea, lote = item['retiro_de'], item['entrada_detalle']
@@ -90,6 +105,88 @@ class RetiroResguardoSerializer(serializers.Serializer):
                     )
                 })
         return data
+
+
+class LigarLineaSerializer(serializers.Serializer):
+    linea = serializers.PrimaryKeyRelatedField(queryset=SalidaDetalle.objects.select_related('salida', 'producto'))
+    retiro_de = serializers.PrimaryKeyRelatedField(queryset=SalidaDetalle.objects.filter(kilos_resguardo__gt=0))
+
+
+class LigarEntregaSerializer(serializers.Serializer):
+    """Entrega ya capturada como salida normal que se liga como retiro de una venta en resguardo."""
+
+    venta = serializers.PrimaryKeyRelatedField(queryset=VENTAS)
+    folio_de_salida = serializers.CharField(max_length=30)
+    lineas = LigarLineaSerializer(many=True)
+
+    def validate_folio_de_salida(self, value):
+        return value.strip().upper()
+
+    def validate(self, data):
+        venta, lineas = data['venta'], data['lineas']
+        if not lineas:
+            raise serializers.ValidationError({'lineas': 'Elige al menos una línea a ligar.'})
+        validas = set(entregas_capturadas(venta, data['folio_de_salida']).values_list('id', flat=True))
+        pendientes, por_linea, salidas = _pendientes(venta), defaultdict(Decimal), set()
+        for item in lineas:
+            linea, venta_linea = item['linea'], item['retiro_de']
+            if linea.id not in validas:
+                raise serializers.ValidationError({
+                    'lineas': f'La línea de {linea.producto} no es una entrega sin precio de la salida {data["folio_de_salida"]}.'
+                })
+            if venta_linea.salida_id != venta.id or venta_linea.producto_id != linea.producto_id:
+                raise serializers.ValidationError({'lineas': f'{linea.producto} no está en resguardo en esta venta.'})
+            if linea.salida.fecha < venta.fecha:
+                raise serializers.ValidationError({'lineas': 'La entrega no puede ser anterior a la venta.'})
+            por_linea[venta_linea.id] += linea.total_kilos
+            salidas.add(linea.salida)
+        for linea_id, kilos in por_linea.items():
+            pendiente = pendientes.get(linea_id, Decimal('0'))
+            if kilos > pendiente:
+                raise serializers.ValidationError({
+                    'lineas': f'Se ligarían {_kg(kilos)} kg y en resguardo quedan {_kg(pendiente)} kg.'
+                })
+        data['salida'] = salidas.pop()
+        return data
+
+
+class EntregasCapturadasView(APIView):
+    """Líneas de la salida ?folio= que se pueden ligar como retiro de la venta ?venta=."""
+
+    permission_classes = [AreaInventarioOCartera]
+
+    def get(self, request):
+        venta = get_object_or_404(VENTAS, pk=request.query_params.get('venta') or 0)
+        folio = (request.query_params.get('folio') or '').strip().upper()
+        lineas = entregas_capturadas(venta, folio) if folio else []
+        return Response([
+            {
+                'id': l.id,
+                'producto_id': l.producto_id,
+                'producto': f'{l.producto.talla} {l.producto.tipo}'.strip(),
+                'fecha': l.salida.fecha.isoformat(),
+                'notas': l.salida.notas,
+                'lote_proveedor': l.entrada_detalle.lote_proveedor,
+                'proveedor': l.entrada_detalle.proveedor_origen.nombre if l.entrada_detalle.proveedor_origen_id else '—',
+                'camara': l.camara.nombre if l.camara_id else '—',
+                'cajas': l.cajas,
+                'kilos': _kg(l.total_kilos),
+            }
+            for l in lineas
+        ])
+
+
+class LigarEntregasView(APIView):
+    permission_classes = [AreaInventarioOCartera]
+
+    def post(self, request):
+        serializer = LigarEntregaSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        retiro = ligar_entregas(serializer.validated_data, request.user)
+        retiro = Salida.objects.prefetch_related(
+            'detalles__producto', 'detalles__entrada_detalle__proveedor_origen', 'detalles__camara',
+        ).select_related('creado_por').get(pk=retiro.pk)
+        return Response(serializar_retiro(retiro), status=status.HTTP_201_CREATED)
 
 
 class ResguardosView(generics.GenericAPIView):
