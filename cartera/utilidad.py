@@ -9,6 +9,8 @@ venta) más el costo unitario que Cartera asigna rastreando la factura.
 - Utilidad bruta = venta − kilos × costo; utilidad real = bruta − kilos ×
   gasto operativo vigente en la fecha de la venta (GastoOperativo, hoy $4/kg).
 - Las líneas sin precio o sin costo no suman y se cuentan aparte.
+- Separada por empresa (la del lote, o la de la venta si es en resguardo):
+  totales por empresa y una hoja de Excel por empresa.
 """
 from bisect import bisect_right
 from decimal import Decimal
@@ -20,7 +22,7 @@ from openpyxl.styles import Font
 from inventario.formatos import FORMATO_KG, FORMATO_PRECIO_KG
 
 from .models import CambioCostoVenta, CostoVenta, GastoOperativo
-from .ventas import importe, lineas_venta
+from .ventas import empresa_de, filtro_empresa, importe, lineas_venta
 
 CERO = Decimal('0')
 CENTAVO = Decimal('0.01')
@@ -44,14 +46,16 @@ def _margen(utilidad, venta):
     return (utilidad / venta * 100).quantize(Decimal('0.1')) if venta else None
 
 
-def lineas(desde, hasta, cliente=None, producto=None):
+def lineas(desde, hasta, cliente=None, producto=None, empresa=None):
     queryset = (
         lineas_venta(clientes=[cliente] if cliente else None, hasta=hasta)
         .filter(salida__fecha__gte=desde)
-        .select_related('costo_cartera', 'salida__empresa', 'entrada_detalle__entrada')
+        .select_related('costo_cartera', 'salida__empresa', 'entrada_detalle__entrada__empresa')
     )
     if producto:
         queryset = queryset.filter(producto_id=producto)
+    if empresa:
+        queryset = queryset.filter(filtro_empresa(empresa))
     return queryset
 
 
@@ -79,8 +83,10 @@ def fila(linea, gasto_por_kilo):
     else:
         estado = COMPLETA
     utilidad = venta - costo if estado == COMPLETA else None
+    empresa = empresa_de(linea)
     return {
         'linea_id': linea.id,
+        'empresa': {'id': empresa.id, 'nombre': empresa.nombre},
         'fecha': salida.fecha,
         'lote': referencia_lote,
         'nota': salida.notas,
@@ -103,17 +109,30 @@ def fila(linea, gasto_por_kilo):
     }
 
 
-def utilidad_real(desde, hasta, cliente=None, producto=None):
+def utilidad_real(desde, hasta, cliente=None, producto=None, empresa=None):
     gasto = _gasto_en(list(GastoOperativo.objects.order_by('vigente_desde')))
-    filas = [fila(l, gasto(l.salida.fecha)) for l in lineas(desde, hasta, cliente, producto)]
+    filas = [fila(l, gasto(l.salida.fecha)) for l in lineas(desde, hasta, cliente, producto, empresa)]
+    por_empresa = {}
+    for f in filas:
+        por_empresa.setdefault(f['empresa']['id'], {'empresa': f['empresa'], 'filas': []})['filas'].append(f)
+    return {
+        'filas': filas,
+        'resumen': resumen(filas),
+        'empresas': [
+            {'empresa': e['empresa'], 'resumen': resumen(e['filas'])}
+            for e in sorted(por_empresa.values(), key=lambda e: e['empresa']['nombre'])
+        ],
+    }
+
+
+def resumen(filas):
+    """Totales de las filas completas y cuántas quedaron fuera."""
     completas = [f for f in filas if f['estado'] == COMPLETA]
     venta = sum((f['venta'] for f in completas), CERO)
     utilidad = sum((f['utilidad'] for f in completas), CERO)
     gasto_operativo = sum((f['kilos'] * f['gasto_por_kilo'] for f in completas), CERO).quantize(CENTAVO)
     real = utilidad - gasto_operativo
     return {
-        'filas': filas,
-        'resumen': {
             'lineas': len(completas),
             'kilos': sum((f['kilos'] for f in completas), CERO),
             'venta': venta,
@@ -126,7 +145,6 @@ def utilidad_real(desde, hasta, cliente=None, producto=None):
             'sin_precio': sum(1 for f in filas if f['estado'] == SIN_PRECIO),
             'sin_costo': sum(1 for f in filas if f['estado'] == SIN_COSTO),
             'costo_propuesto': sum(1 for f in completas if not f['costo_capturado']),
-        },
     }
 
 
@@ -167,18 +185,29 @@ FORMATO_PESOS = '"$"#,##0.00;[Red]-"$"#,##0.00'
 
 
 def construir_excel(datos, titulo):
-    """Mismas columnas que la hoja Registro del área, con el bloque de totales al pie."""
+    """
+    Mismas columnas que la hoja Registro del área, una hoja por empresa
+    ("Registro IMPORTADORA", "Registro MARISCOS SELECTOS") con sus totales al pie.
+    """
+    wb = Workbook()
+    wb.remove(wb.active)
+    empresas = datos['empresas'] or [{'empresa': {'nombre': ''}, 'resumen': datos['resumen']}]
+    for e in empresas:
+        nombre = e['empresa']['nombre']
+        filas = [f for f in datos['filas'] if f['empresa']['nombre'] == nombre]
+        _hoja_registro(wb.create_sheet(f'Registro {nombre}'.strip()[:31]), filas, e['resumen'], f'{titulo} · {nombre}'.strip(' ·'))
+    return wb
+
+
+def _hoja_registro(ws, filas, s, titulo):
     from inventario.reportes import _estilizar_encabezado
 
     def numero(v):
         return float(v) if v is not None else None
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = 'Registro'
     ws.append(ENCABEZADOS)
     _estilizar_encabezado(ws, len(ENCABEZADOS))
-    for f in datos['filas']:
+    for f in filas:
         ws.append([
             f['fecha'], f['lote'], f['nota'], f['proveedor'], f['cliente'], f['producto'], numero(f['kilos']),
             numero(f['precio']), numero(f['venta']), numero(f['costo_unitario']), numero(f['costo']),
@@ -192,7 +221,6 @@ def construir_excel(datos, titulo):
         for c in (9, 11, 12):
             ws.cell(r, c).number_format = FORMATO_PESOS
         ws.cell(r, 13).number_format = '0.0%'
-    s = datos['resumen']
     ws.append([])
     for etiqueta, valor, formato in (
         ('TOTALES (kilos)', s['kilos'], FORMATO_KG),
@@ -212,4 +240,3 @@ def construir_excel(datos, titulo):
     for col, ancho in zip('ABCDEFGHIJKLM', (12, 14, 14, 26, 28, 22, 12, 11, 15, 12, 15, 14, 8)):
         ws.column_dimensions[col].width = ancho
     ws.freeze_panes = 'A2'
-    return wb

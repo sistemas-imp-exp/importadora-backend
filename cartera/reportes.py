@@ -11,7 +11,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from inventario.formatos import FORMATO_KG, FORMATO_PRECIO_KG, kg, precio_kg
 from treasury.reportes import (
@@ -127,32 +127,50 @@ def filas_estado_cuenta(renglones):
     return filas
 
 
-def construir_pdf_estado_cuenta(cliente, perfil, renglones, saldos, empresa=None):
+def construir_pdf_estado_cuenta(cliente, perfil, secciones, conjunto=None):
+    """
+    `secciones`: [(empresa, renglones, saldo)], una por empresa; cada una
+    empieza en hoja nueva con el encabezado del cliente, para poder entregarla
+    por separado. `conjunto`: saldo de todas las empresas (si son varias).
+    """
     buffer = BytesIO()
     documento = _documento(buffer, f'Estado de cuenta - {cliente.nombre}', horizontal=True)
     estilos = _estilos()
     etiqueta = ParagraphStyle('dato_etiqueta', parent=ESTILOS['Normal'], fontSize=8.5, fontName='Helvetica-Bold',
                               textColor=colors.HexColor('#555555'))
     valor = ParagraphStyle('dato_valor', parent=ESTILOS['Normal'], fontSize=9)
-    datos = Table(
-        [[Paragraph(escape(e), etiqueta), Paragraph(escape(v), valor)] for e, v in datos_cliente(cliente, perfil, empresa)],
-        colWidths=[2.4 * cm, 13 * cm], hAlign='LEFT',
-    )
-    datos.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('TOPPADDING', (0, 0), (-1, -1), 1), ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
-        ('LEFTPADDING', (0, 0), (0, -1), 0),
-    ]))
-    resumen = ' · '.join(f"{escape(nombre)}: <b>{_dinero(saldo)}</b>" for nombre, saldo in saldos)
-    elementos = [
-        Paragraph('Importadora y Exportadora de Mariscos de Centro América y el Caribe', estilos['empresa']),
-        Paragraph('Estado de cuenta', estilos['titulo']),
-        datos,
-        Spacer(1, 0.15 * cm),
-        Paragraph(f'Saldo actual — {resumen}', estilos['subtitulo']),
-        Paragraph(_generado(), estilos['generado']),
-        Spacer(1, 0.4 * cm),
-    ]
+    elementos = []
+    for indice, (empresa, renglones, saldo) in enumerate(secciones):
+        if indice:
+            elementos.append(PageBreak())
+        datos = Table(
+            [[Paragraph(escape(e), etiqueta), Paragraph(escape(v), valor)] for e, v in datos_cliente(cliente, perfil, empresa)],
+            colWidths=[2.4 * cm, 13 * cm], hAlign='LEFT',
+        )
+        datos.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 1), ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+            ('LEFTPADDING', (0, 0), (0, -1), 0),
+        ]))
+        resumen = f"Saldo actual: <b>{_dinero(saldo)}</b>"
+        if conjunto is not None:
+            resumen += f" · Saldo conjunto (todas las empresas): <b>{_dinero(conjunto)}</b>"
+        elementos += [
+            Paragraph('Importadora y Exportadora de Mariscos de Centro América y el Caribe', estilos['empresa']),
+            Paragraph('Estado de cuenta', estilos['titulo']),
+            datos,
+            Spacer(1, 0.15 * cm),
+            Paragraph(resumen, estilos['subtitulo']),
+            Paragraph(_generado(), estilos['generado']),
+            Spacer(1, 0.4 * cm),
+            _tabla_estado_cuenta(renglones),
+        ]
+    documento.build(elementos, onFirstPage=_pie_pagina_pdf, onLaterPages=_pie_pagina_pdf)
+    buffer.seek(0)
+    return buffer
+
+
+def _tabla_estado_cuenta(renglones):
     filas = [COLUMNAS_ESTADO]
     extra = []
     for valores, c in filas_estado_cuenta(renglones):
@@ -174,22 +192,28 @@ def construir_pdf_estado_cuenta(cliente, perfil, renglones, saldos, empresa=None
     anchos = [1.9, 1.9, 4.6, 1.9, 2.9, 1.7, 1.8, 2.3, 2.4, 2.4, 2.6]
     tabla = Table(filas, colWidths=_anchos(anchos, horizontal=True), repeatRows=1)
     tabla.setStyle(_estilo_tabla(extra))
-    elementos.append(tabla)
-    documento.build(elementos, onFirstPage=_pie_pagina_pdf, onLaterPages=_pie_pagina_pdf)
-    buffer.seek(0)
-    return buffer
+    return tabla
 
 
-def construir_excel_estado_cuenta(cliente, renglones, perfil=None, empresa=None):
+def construir_excel_estado_cuenta(cliente, perfil, secciones):
+    """Una hoja por empresa (`secciones`: [(empresa, renglones, saldo)]), con el encabezado del cliente."""
     wb = Workbook()
-    ws = wb.active
-    ws.title = 'Estado de cuenta'
+    wb.remove(wb.active)
+    for empresa, renglones, _ in secciones:
+        nombre = empresa.nombre if empresa is not None else 'Estado de cuenta'
+        _hoja_estado_cuenta(wb.create_sheet(nombre[:31]), cliente, perfil, empresa, renglones)
+    return wb
+
+
+def _hoja_estado_cuenta(ws, cliente, perfil, empresa, renglones):
     # Encabezado con los datos del cliente y, debajo, la tabla.
     ws.append(['Estado de cuenta'])
     ws.cell(row=1, column=1).font = Font(bold=True, size=13)
     for etiqueta, valor in datos_cliente(cliente, perfil, empresa):
         ws.append([etiqueta, valor])
         ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+        # Capturado por usuarios: siempre texto, nunca fórmula.
+        ws.cell(row=ws.max_row, column=2).data_type = 's'
     ws.append([_generado()])
     ws.cell(row=ws.max_row, column=1).font = Font(italic=True, color='808080')
     ws.append([])
@@ -216,7 +240,6 @@ def construir_excel_estado_cuenta(cliente, renglones, perfil=None, empresa=None)
     for col, ancho in zip('ABCDEFGHIJK', (12, 12, 40, 12, 20, 11, 12, 15, 15, 15, 16)):
         ws.column_dimensions[col].width = ancho
     ws.freeze_panes = f'A{encabezado + 1}'
-    return wb
 
 
 # --- Saldos de clientes -----------------------------------------------------

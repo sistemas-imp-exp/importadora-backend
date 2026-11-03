@@ -181,27 +181,34 @@ class ClienteCarteraViewSet(
             lineas = [linea for linea in lineas if estado(linea)[0] == filtro_estado]
         return Response(ventas_agrupadas(lineas))
 
-    @action(detail=True, methods=['get'], url_path='estado-cuenta/pdf')
-    def estado_cuenta_pdf(self, request, pk=None):
-        cliente = self.get_object()
+    def _secciones_estado_cuenta(self, cliente):
+        """
+        [(empresa, renglones, saldo)]: la empresa filtrada o, sin filtro, una
+        por empresa con movimientos (cada una con su propio saldo corrido), y
+        el saldo conjunto si son varias.
+        """
         empresa = self._empresa_filtro()
         saldos = saldos_por_cliente(clientes=[cliente.id])[cliente.id]
         empresas = [empresa] if empresa else list(Empresa.objects.order_by('nombre'))
-        resumen = [(e.nombre, saldos[e.id]) for e in empresas]
+        secciones = [(e, estado_de_cuenta(cliente, e), saldos[e.id]) for e in empresas]
         if not empresa:
-            resumen.append(('Conjunto', sum(saldos[e.id] for e in empresas)))
-        buffer = construir_pdf_estado_cuenta(
-            cliente, getattr(cliente, 'cartera', None), estado_de_cuenta(cliente, empresa), resumen, empresa,
-        )
+            con_movimientos = [s for s in secciones if s[1]]
+            secciones = con_movimientos or secciones[:1]
+        conjunto = sum(saldos[e.id] for e in empresas) if len(secciones) > 1 else None
+        return secciones, conjunto
+
+    @action(detail=True, methods=['get'], url_path='estado-cuenta/pdf')
+    def estado_cuenta_pdf(self, request, pk=None):
+        cliente = self.get_object()
+        secciones, conjunto = self._secciones_estado_cuenta(cliente)
+        buffer = construir_pdf_estado_cuenta(cliente, getattr(cliente, 'cartera', None), secciones, conjunto)
         return _descarga(buffer.getvalue(), 'application/pdf', f'estado_cuenta_cliente_{cliente.id}.pdf')
 
     @action(detail=True, methods=['get'], url_path='estado-cuenta/excel')
     def estado_cuenta_excel(self, request, pk=None):
         cliente = self.get_object()
-        empresa = self._empresa_filtro()
-        libro = construir_excel_estado_cuenta(
-            cliente, estado_de_cuenta(cliente, empresa), getattr(cliente, 'cartera', None), empresa,
-        )
+        secciones, _ = self._secciones_estado_cuenta(cliente)
+        libro = construir_excel_estado_cuenta(cliente, getattr(cliente, 'cartera', None), secciones)
         return _excel(libro, f'estado_cuenta_cliente_{cliente.id}.xlsx')
 
 

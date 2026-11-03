@@ -526,9 +526,26 @@ class UtilidadRealTests(BaseCartera):
         self.client.post(f"{self.URL}gastos-operativos/", {"por_kilo": "5", "vigente_desde": HOY.isoformat()}, format="json")
         self.assertEqual(self._utilidad()["resumen"]["gasto_operativo"], "655.00")
 
+    def test_separada_por_empresa(self):
+        datos = self._utilidad()
+        self.assertEqual({f["empresa"]["nombre"] for f in datos["filas"]}, {"IMPORTADORA", "MARISCOS SELECTOS"})
+        por_empresa = {e["empresa"]["nombre"]: e["resumen"] for e in datos["empresas"]}
+        self.assertEqual(sorted(por_empresa), ["IMPORTADORA", "MARISCOS SELECTOS"])
+        # Las partes suman el total.
+        self.assertEqual(sum(Decimal(r["venta"]) for r in por_empresa.values()), Decimal(datos["resumen"]["venta"]))
+        solo = self._utilidad(empresa=self.sel.id)
+        self.assertEqual({f["empresa"]["nombre"] for f in solo["filas"]}, {"MARISCOS SELECTOS"})
+        self.assertEqual(solo["resumen"]["venta"], por_empresa["MARISCOS SELECTOS"]["venta"])
+        libro = load_workbook(BytesIO(self.client.get(f"{self.URL}excel/", {
+            "desde": (CORTE + timedelta(days=1)).isoformat(), "empresa": self.sel.id}).content))
+        self.assertEqual(libro.sheetnames, ["Registro MARISCOS SELECTOS"])
+
     def test_excel_como_la_hoja_registro_y_permisos(self):
         respuesta = self.client.get(f"{self.URL}excel/", {"desde": (CORTE + timedelta(days=1)).isoformat()})
-        hoja = load_workbook(BytesIO(respuesta.content))["Registro"]
+        libro = load_workbook(BytesIO(respuesta.content))
+        # Una hoja por empresa.
+        self.assertEqual(libro.sheetnames, ["Registro IMPORTADORA", "Registro MARISCOS SELECTOS"])
+        hoja = libro["Registro IMPORTADORA"]
         self.assertEqual([c.value for c in hoja[1]][:4], ["Fecha", "LOTE", "Nota", "PROVEEDOR"])
         self.assertTrue(any(f[5] == "Utilidad real" for f in hoja.iter_rows(values_only=True)))
         self.assertEqual(self.client.post(f"{self.URL}costos/", {"costos": [{"linea_id": 999999, "costo_unitario": "1"}]},
@@ -582,6 +599,28 @@ class DatosClienteYArchivosTests(BaseCartera):
         self.assertEqual(encabezado["Empresa"], "IMPORTADORA")
         self.assertIn("Nota", [f[0] for f in filas])
         self.assertEqual(self.client.get(f"{url}estado-cuenta/pdf/").status_code, 200)
+
+    def test_estado_de_cuenta_sin_filtro_va_separado_por_empresa(self):
+        self._pago("300")
+        url = f"/api/cartera/clientes/{self.cliente.id}/estado-cuenta/"
+        libro = load_workbook(BytesIO(self.client.get(f"{url}excel/").content))
+        self.assertEqual(libro.sheetnames, ["IMPORTADORA", "MARISCOS SELECTOS"])
+        # Cada hoja con su empresa en el encabezado y su propio saldo corrido.
+        for nombre, saldo in (("IMPORTADORA", 700), ("MARISCOS SELECTOS", -200)):
+            filas = list(libro[nombre].iter_rows(values_only=True))
+            self.assertEqual({f[0]: f[1] for f in filas[1:7]}["Empresa"], nombre)
+            self.assertEqual([f for f in filas if f and isinstance(f[10], (int, float))][-1][10], saldo)
+        libro = load_workbook(BytesIO(self.client.get(f"{url}excel/", {"empresa": self.sel.id}).content))
+        self.assertEqual(libro.sheetnames, ["MARISCOS SELECTOS"])
+        self.assertEqual(self.client.get(f"{url}pdf/").status_code, 200)
+
+    def test_domicilio_con_signo_igual_queda_como_texto_en_excel(self):
+        datos = {"nombre": "CABEZA DE TORO", "activo": True, "domicilio": "=1+1"}
+        self.client.put(f"/api/cartera/clientes/{self.cliente.id}/", datos, format="json")
+        hoja = load_workbook(BytesIO(self.client.get(
+            f"/api/cartera/clientes/{self.cliente.id}/estado-cuenta/excel/", {"empresa": self.imp.id}).content)).active
+        celda = next(f[1] for f in hoja.iter_rows(min_row=2, max_row=7) if f[0].value == "Domicilio")
+        self.assertEqual((celda.value, celda.data_type), ("=1+1", "s"))
 
     def test_archivos_de_pagos_identificados_agregan_los_por_identificar(self):
         self._pago("300")

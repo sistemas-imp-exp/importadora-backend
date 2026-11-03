@@ -30,14 +30,17 @@ def _periodo(params):
 
 
 class UtilidadRealView(APIView):
-    """GET ?desde=&hasta=&cliente=&producto= (JSON, o Excel con formato='excel')."""
+    """GET ?desde=&hasta=&cliente=&producto=&empresa= (JSON, o Excel con formato='excel', una hoja por empresa)."""
     permission_classes = [AreaCartera]
     formato = None
 
     def get(self, request):
         params = request.query_params
         desde, hasta = _periodo(params)
-        datos = utilidad_real(desde, hasta, cliente=params.get('cliente') or None, producto=params.get('producto') or None)
+        datos = utilidad_real(
+            desde, hasta, cliente=params.get('cliente') or None, producto=params.get('producto') or None,
+            empresa=params.get('empresa') or None,
+        )
         if self.formato == 'excel':
             titulo = f'Utilidad real del {desde:%d/%m/%Y} al {hasta:%d/%m/%Y}'
             return _excel(construir_excel(datos, titulo), f'utilidad_real_{desde:%Y%m%d}_{hasta:%Y%m%d}.xlsx')
@@ -49,8 +52,13 @@ class UtilidadRealView(APIView):
                        'costo_unitario': _texto(f['costo_unitario']), 'costo': _texto(f['costo']),
                        'utilidad': _texto(f['utilidad']), 'margen': _texto(f['margen']),
                        'gasto_por_kilo': _texto(f['gasto_por_kilo'])} for f in datos['filas']],
-            'resumen': {k: _texto(v) if not isinstance(v, int) else v for k, v in datos['resumen'].items()},
+            'resumen': _resumen_json(datos['resumen']),
+            'empresas': [{'empresa': e['empresa'], 'resumen': _resumen_json(e['resumen'])} for e in datos['empresas']],
         })
+
+
+def _resumen_json(resumen):
+    return {k: _texto(v) if not isinstance(v, int) else v for k, v in resumen.items()}
 
 
 class CostoLineaSerializer(serializers.Serializer):
