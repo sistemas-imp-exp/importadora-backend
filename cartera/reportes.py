@@ -14,6 +14,7 @@ from reportlab.lib.units import cm
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from inventario.formatos import FORMATO_KG, FORMATO_PRECIO_KG, kg, precio_kg
+from .antiguedad import partes_aplicadas, texto_aplicacion
 from treasury.reportes import (
     COLOR_ENCABEZADO,
     COLOR_ENCABEZADO_RL,
@@ -348,7 +349,7 @@ def construir_excel_saldos(empresas, filas, sin_identificar=None):
 
 # --- Pagos de clientes ------------------------------------------------------
 
-COLUMNAS_PAGOS = ['Fecha', 'Cliente', 'Empresa', 'Tipo', 'Monto', 'Referencia', 'Capturó', 'Estado']
+COLUMNAS_PAGOS = ['Fecha', 'Cliente', 'Empresa', 'Tipo', 'Monto', 'Aplicado a', 'Referencia', 'Capturó', 'Estado']
 
 
 def _fila_pago(pago):
@@ -358,6 +359,7 @@ def _fila_pago(pago):
         pago.empresa.nombre,
         pago.get_tipo_display(),
         pago.monto,
+        texto_aplicacion(partes_aplicadas(pago), pago.monto) or 'Lo más antiguo',
         pago.referencia or '',
         pago.usuario.username if pago.usuario_id else '',
         f'Cancelado: {pago.motivo_cancelacion}' if pago.cancelado else 'Activo',
@@ -371,12 +373,13 @@ def _tabla_pagos(pagos, texto_vacio):
     extra = []
     total = Decimal('0')
     for pago in pagos:
-        fecha, cliente, empresa, tipo, monto, referencia, usuario, estado = _fila_pago(pago)
+        fecha, cliente, empresa, tipo, monto, aplicado, referencia, usuario, estado = _fila_pago(pago)
         c = pago.cancelado
         filas.append([
             _celda_detalle(fecha.strftime('%d/%m/%Y'), TA_CENTER, c), _celda_detalle(cliente, TA_LEFT, c),
             _celda_detalle(empresa, TA_LEFT, c), _celda_detalle(tipo, TA_LEFT, c),
-            _celda_detalle(_dinero(monto), TA_RIGHT, c), _celda_detalle(referencia, TA_LEFT, c),
+            _celda_detalle(_dinero(monto), TA_RIGHT, c), _celda_detalle(aplicado, TA_LEFT, c),
+            _celda_detalle(referencia, TA_LEFT, c),
             _celda_detalle(usuario, TA_LEFT, c), _celda_detalle(estado, TA_LEFT, c),
         ])
         if c:
@@ -384,11 +387,11 @@ def _tabla_pagos(pagos, texto_vacio):
         else:
             total += monto
     if len(filas) == 1:
-        filas.append(['', Paragraph(texto_vacio, celda), '', '', '', '', '', ''])
+        filas.append(['', Paragraph(texto_vacio, celda), '', '', '', '', '', '', ''])
     activos = sum(1 for p in pagos if not p.cancelado)
-    filas.append(['', Paragraph(f'<b>Total ({activos} activo(s))</b>', celda), '', '', _dinero(total), '', '', ''])
+    filas.append(['', Paragraph(f'<b>Total ({activos} activo(s))</b>', celda), '', '', _dinero(total), '', '', '', ''])
     ultima = len(filas) - 1
-    tabla = Table(filas, colWidths=_anchos([2.1, 5.6, 3.2, 3.4, 2.7, 4.8, 2.0, 3.4], horizontal=True), repeatRows=1)
+    tabla = Table(filas, colWidths=_anchos([2.0, 4.8, 2.8, 3.0, 2.5, 4.6, 3.8, 1.9, 2.8], horizontal=True), repeatRows=1)
     tabla.setStyle(_estilo_tabla(extra + [
         ('FONTNAME', (0, ultima), (-1, ultima), 'Helvetica-Bold'),
         ('ALIGN', (4, ultima), (4, ultima), 'RIGHT'),
@@ -441,6 +444,10 @@ def _hoja_pagos(ws, pagos, filtros):
         fila = ws.max_row
         ws.cell(row=fila, column=1).number_format = 'DD/MM/YYYY'
         ws.cell(row=fila, column=5).number_format = FORMATO_DINERO
+        # El texto capturado (cliente, nota, referencia) va siempre como texto, nunca como fórmula.
+        for col, valor in enumerate(valores, start=1):
+            if isinstance(valor, str):
+                ws.cell(row=fila, column=col).data_type = 's'
         if pago.cancelado:
             for col in range(1, len(COLUMNAS_PAGOS) + 1):
                 ws.cell(row=fila, column=col).font = tachado
@@ -454,7 +461,7 @@ def _hoja_pagos(ws, pagos, filtros):
     ws.append([])
     for f in filtros:
         ws.append([f])
-    for col, ancho in zip('ABCDEFGH', (12, 36, 20, 26, 15, 40, 14, 30)):
+    for col, ancho in zip('ABCDEFGHI', (12, 36, 20, 26, 15, 40, 40, 14, 30)):
         ws.column_dimensions[col].width = ancho
     ws.freeze_panes = 'A2'
 

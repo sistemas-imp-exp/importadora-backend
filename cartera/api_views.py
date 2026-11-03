@@ -181,6 +181,34 @@ class ClienteCarteraViewSet(
             lineas = [linea for linea in lineas if estado(linea)[0] == filtro_estado]
         return Response(ventas_agrupadas(lineas))
 
+    @action(detail=True, methods=['get'], url_path='notas-pendientes')
+    def notas_pendientes(self, request, pk=None):
+        """
+        Notas a las que se puede aplicar un pago en ?empresa= (saldo al corte y
+        ventas), con lo pendiente a hoy y lo que aún admite. ?pago= excluye al
+        pago que se está editando; ?fecha= deja fuera las notas posteriores.
+        """
+        from .antiguedad import notas_pendientes
+        cliente = self.get_object()
+        empresa = self._empresa_filtro()
+        if empresa is None:
+            raise DRFValidationError({'empresa': 'Indica la empresa.'})
+        pago = request.query_params.get('pago')
+        excluir = int(pago) if (pago or '').isdigit() else None
+        fecha = parse_date(request.query_params.get('fecha') or '')
+        notas = notas_pendientes(cliente.id, empresa.id, hasta=fecha, excluir_pago=excluir)
+        hoy = timezone.localdate()
+        return Response([
+            {
+                'salida_id': n.salida_id, 'tipo': n.tipo, 'nota': n.nota, 'folio': n.folio,
+                'fecha': n.fecha.isoformat(), 'dias': (hoy - n.fecha).days,
+                'importe': _dinero(n.importe), 'pendiente': _dinero(n.pendiente),
+                # Lo que admite: el importe menos lo aplicado a mano por otros pagos.
+                'disponible': _dinero(n.importe - n.aplicado),
+            }
+            for n in notas
+        ])
+
     def _secciones_estado_cuenta(self, cliente):
         """
         [(empresa, renglones, saldo)]: la empresa filtrada o, sin filtro, una
@@ -266,7 +294,7 @@ class PagoClienteViewSet(MovimientoCarteraViewSet):
     serializer_class = PagoClienteSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset().select_related('ingreso_tesoreria')
+        queryset = super().get_queryset().select_related('ingreso_tesoreria').prefetch_related('aplicaciones__salida')
         tipo = self.request.query_params.get('tipo')
         if tipo:
             queryset = queryset.filter(tipo=tipo)
@@ -310,7 +338,9 @@ class PagoClienteViewSet(MovimientoCarteraViewSet):
         valor = self.request.query_params.get('por_identificar')
         if valor is None or _verdadero(valor):
             return None
-        pendientes = PagoCliente.objects.select_related('empresa', 'usuario').filter(cliente__isnull=True, cancelado=False)
+        pendientes = PagoCliente.objects.select_related('empresa', 'usuario').prefetch_related('aplicaciones').filter(
+            cliente__isnull=True, cancelado=False,
+        )
         if self.request.query_params.get('empresa'):
             pendientes = pendientes.filter(empresa_id=self.request.query_params['empresa'])
         return list(pendientes.order_by('-fecha', '-creado'))
@@ -539,6 +569,37 @@ class ReporteSaldosView(APIView):
                 for f in filas
             ],
         })
+
+
+class AntiguedadSaldosView(APIView):
+    """
+    Antigüedad de saldos por nota como "Cobro a clientes 2026" del área:
+    ?fecha= (por omisión hoy), ?empresa=, ?cliente=. JSON o Excel.
+    """
+    permission_classes = [AreaCartera]
+    formato = None
+
+    def get(self, request):
+        from .antiguedad import construir_excel, reporte, serializar
+        params = request.query_params
+        fecha = parse_date(params.get('fecha') or '') if params.get('fecha') else timezone.localdate()
+        if fecha is None:
+            raise DRFValidationError({'fecha': 'Fecha inválida.'})
+        if fecha > timezone.localdate():
+            raise DRFValidationError({'fecha': 'La fecha no puede ser futura.'})
+        corte = fecha_corte()
+        if corte and fecha < corte:
+            raise DRFValidationError({'fecha': f'La cartera arranca al {corte:%d/%m/%Y}.'})
+        empresa = params.get('empresa')
+        cliente = params.get('cliente')
+        datos = reporte(
+            fecha,
+            clientes=[int(cliente)] if (cliente or '').isdigit() else None,
+            empresa_id=int(empresa) if (empresa or '').isdigit() else None,
+        )
+        if self.formato == 'excel':
+            return _excel(construir_excel(datos), f'antiguedad_saldos_{fecha:%Y_%m_%d}.xlsx')
+        return Response(serializar(datos))
 
 
 class ControlMensualView(APIView):

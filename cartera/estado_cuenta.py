@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from inventario.models import Cliente, Empresa
 
+from .antiguedad import partes_aplicadas, texto_aplicacion
 from .models import AjusteCliente, ClienteCartera, PagoCliente, SaldoInicialCliente
 from .ventas import empresa_de, estado, importe, lineas_venta, producto_de
 from .saldos import saldos_por_cliente, ultimos_pagos
@@ -40,7 +41,9 @@ def estado_de_cuenta(cliente, empresa=None):
     renglones = []
 
     iniciales = SaldoInicialCliente.objects.filter(cliente=cliente).select_related('empresa')
-    pagos = PagoCliente.objects.filter(cliente=cliente).select_related('empresa', 'ingreso_tesoreria')
+    pagos = PagoCliente.objects.filter(cliente=cliente).select_related('empresa', 'ingreso_tesoreria').prefetch_related(
+        'aplicaciones__salida',
+    )
     ajustes = AjusteCliente.objects.filter(cliente=cliente).select_related('empresa', 'contraparte__empresa')
     if empresa is not None:
         iniciales, pagos, ajustes = (q.filter(empresa=empresa) for q in (iniciales, pagos, ajustes))
@@ -58,7 +61,9 @@ def estado_de_cuenta(cliente, empresa=None):
             referencia = f'Tesorería folio {pago.ingreso_tesoreria.folio}' + (f' · {referencia}' if referencia else '')
         renglones.append(Renglon(
             fecha=pago.fecha, tipo='pago', empresa=pago.empresa.nombre, referencia=referencia,
-            concepto=pago.get_tipo_display().upper() + (f' · {pago.notas}' if pago.notas else ''),
+            concepto=pago.get_tipo_display().upper() + (f' · {pago.notas}' if pago.notas else '') + (
+                f' · Aplicado a: {aplicado}' if (aplicado := texto_aplicacion(partes_aplicadas(pago), pago.monto)) else ''
+            ),
             cargo=CERO, abono=pago.monto, cancelado=pago.cancelado, motivo_cancelacion=pago.motivo_cancelacion,
             id=pago.id, orden=(pago.fecha, 1, pago.creado),
         ))

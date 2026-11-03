@@ -149,6 +149,32 @@ class PagoCliente(MovimientoCarteraBase):
         return self.cliente_id is None
 
 
+class AplicacionPago(models.Model):
+    """
+    Parte de un pago que Cartera descuenta de una nota (venta) del cliente en
+    la empresa del pago; sin salida = del saldo al corte. Lo no aplicado del
+    pago, los abonos y el saldo a favor se descuentan de lo más antiguo (ver
+    cartera/antiguedad.py). Validado en PagoClienteSerializer._preparar_aplicaciones.
+    Si Inventario borra la salida, su aplicación se va con ella (el pago vuelve
+    a lo más antiguo).
+    """
+    pago = models.ForeignKey(PagoCliente, on_delete=models.CASCADE, related_name='aplicaciones')
+    salida = models.ForeignKey(
+        'inventario.Salida', on_delete=models.CASCADE, null=True, blank=True, related_name='aplicaciones_cartera',
+    )
+    monto = models.DecimalField(max_digits=18, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+
+    class Meta:
+        ordering = ['id']
+        constraints = [
+            models.UniqueConstraint(fields=['pago', 'salida'], name='aplicacion_pago_nota_unica'),
+            models.UniqueConstraint(fields=['pago'], condition=Q(salida__isnull=True), name='aplicacion_pago_corte_unica'),
+        ]
+
+    def __str__(self):
+        return f"{self.pago_id} → {self.salida_id or 'saldo al corte'}: {self.monto}"
+
+
 class AjusteCliente(MovimientoCarteraBase):
     """
     Movimiento libre que sube (cargo) o baja (abono) el saldo: "pago 2 kg cam.",
