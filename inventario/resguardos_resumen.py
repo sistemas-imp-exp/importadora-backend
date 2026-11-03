@@ -134,6 +134,14 @@ def serializar_resumen(resumen):
     }
 
 
+def _texto(celda, valor):
+    """Texto capturado por usuarios: siempre como cadena, nunca como fórmula (p. ej. una nota que empiece con =)."""
+    celda.value = valor
+    if isinstance(valor, str):
+        celda.data_type = 's'
+    return celda
+
+
 def _generado():
     return f"Al {timezone.localtime(timezone.now()).strftime('%d/%m/%Y %H:%M')}"
 
@@ -157,7 +165,7 @@ def construir_excel(resumen):
         ws.cell(fila, 2, 'No hay resguardos pendientes.')
     for bloque in resumen:
         # Título del cliente (B:H combinadas) y OBSERVACIÓN aparte, como en la hoja.
-        ws.cell(fila, 2, f"RESGUARDO {bloque['cliente']['nombre']}")
+        _texto(ws.cell(fila, 2), f"RESGUARDO {bloque['cliente']['nombre']}")
         ws.merge_cells(start_row=fila, start_column=2, end_row=fila, end_column=8)
         ws.cell(fila, 9, 'OBSERVACIÓN')
         for col in range(2, 10):
@@ -181,10 +189,10 @@ def construir_excel(resumen):
             valores = [f['fecha'], nota, f['talla'], f['proveedor'], float(f['kilos']),
                        float(f['precio']) if f['precio'] is not None else None]
             for col, valor in enumerate(valores, start=2):
-                ws.cell(fila, col, valor).border = borde
+                _texto(ws.cell(fila, col), valor).border = borde
             ws.cell(fila, 8, f'=F{fila}*G{fila}' if f['precio'] is not None else None).border = borde
             observacion = f['observacion'] or ('Sin precio en la venta' if f['precio'] is None else '')
-            ws.cell(fila, 9, observacion).border = borde
+            _texto(ws.cell(fila, 9), observacion).border = borde
             ws.cell(fila, 2).number_format = 'DD/MM/YYYY'
             ws.cell(fila, 6).number_format = FORMATO_KG
             ws.cell(fila, 7).number_format = FORMATO_PESOS

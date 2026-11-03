@@ -314,3 +314,10 @@ class ResguardoTests(APITestCase):
         self.assertEqual(_proveedor_y_observacion(linea, ["CAMANICA", "COEXMAR"]), ("CAMANICA / COEXMAR", ""))
         linea.notas = "Se lleva el lunes"
         self.assertEqual(_proveedor_y_observacion(linea, []), ("", "Se lleva el lunes"))
+
+    def test_resumen_excel_no_convierte_texto_en_formula(self):
+        self._vender(nota="=HYPERLINK(\"http://x\")", kilos="100", cajas=5)
+        self.client.force_authenticate(user=self.cobranza)
+        hoja = load_workbook(BytesIO(self.client.get(f"{URL}resumen/excel/").content))["RESUMEN RESG."]
+        celda = hoja["C5"]
+        self.assertEqual((celda.value.upper(), celda.data_type), ('=HYPERLINK("HTTP://X")', "s"))
