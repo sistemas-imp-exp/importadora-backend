@@ -539,3 +539,32 @@ class ReporteSaldosView(APIView):
                 for f in filas
             ],
         })
+
+
+class ControlMensualView(APIView):
+    """
+    Control del mes por empresa como las hojas "<EMPRESA> <MES> <AÑO>" del área:
+    ?mes=AAAA-MM (por omisión el mes en curso). JSON o Excel (una hoja por empresa).
+    """
+    permission_classes = [AreaCartera]
+    formato = None
+
+    def get(self, request):
+        from .control_mensual import MesInvalido, construir_excel, control_mensual, serializar
+        texto = (request.query_params.get('mes') or timezone.localdate().strftime('%Y-%m')).strip()
+        try:
+            anio, mes = (int(x) for x in texto.split('-'))
+            if not 1 <= mes <= 12:
+                raise ValueError
+            control = control_mensual(anio, mes)
+        except MesInvalido as error:
+            raise DRFValidationError({'mes': str(error)})
+        except ValueError:
+            raise DRFValidationError({'mes': 'Mes inválido, usa AAAA-MM.'})
+        if self.formato == 'excel':
+            return _descarga(
+                construir_excel(control, anio, mes).getvalue(),
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                f'control_cartera_{anio}_{mes:02d}.xlsx',
+            )
+        return Response(serializar(control, anio, mes))
