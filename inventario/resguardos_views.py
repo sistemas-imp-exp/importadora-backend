@@ -6,7 +6,9 @@ from collections import defaultdict
 from decimal import Decimal
 
 from django.db.models import F, Sum
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,6 +19,7 @@ from .existencias_views import _serializar as serializar_lote
 from .models import Cliente, EntradaDetalle, Salida, SalidaDetalle
 from .paginacion import PaginacionInventario
 from .reportes import obtener_lotes_filtrados
+from . import resguardos_resumen
 from .resguardos import (
     _kg, cancelar_retiro, entregas_capturadas, ligar_entregas, lineas_con_retirado, registrar_retiro, resguardos,
     retiros_de, serializar_resguardo, serializar_retiro,
@@ -250,3 +253,25 @@ class LotesParaRetiroView(APIView):
             return Response([])
         lotes = obtener_lotes_filtrados({}).filter(producto_id__in=productos)
         return Response([serializar_lote(lote) for lote in lotes])
+
+
+class ResumenResguardosView(APIView):
+    """Lo que cada cliente tiene por entregar, como la hoja RESUMEN RESG. (?cliente=)."""
+
+    permission_classes = [AreaInventarioOCartera]
+
+    def get(self, request, formato=None):
+        resumen = resguardos_resumen.resumen_resguardos(request.query_params.get('cliente') or None)
+        if formato is None:
+            return Response(resguardos_resumen.serializar_resumen(resumen))
+        nombre = f'resumen-resguardos-{timezone.localdate():%Y-%m-%d}'
+        if formato == 'pdf':
+            respuesta = HttpResponse(resguardos_resumen.construir_pdf(resumen).getvalue(), content_type='application/pdf')
+            respuesta['Content-Disposition'] = f'attachment; filename="{nombre}.pdf"'
+        else:
+            respuesta = HttpResponse(
+                resguardos_resumen.construir_excel(resumen).getvalue(),
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            )
+            respuesta['Content-Disposition'] = f'attachment; filename="{nombre}.xlsx"'
+        return respuesta
