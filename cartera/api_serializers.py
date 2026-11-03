@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta
 from decimal import Decimal
 
@@ -40,12 +41,15 @@ class EmpresaSerializer(serializers.ModelSerializer):
 class ClienteCarteraSerializer(serializers.ModelSerializer):
     """Cliente (catálogo de Inventario) con sus datos de cobranza."""
     celular = serializers.CharField(source='cartera.celular', required=False, allow_blank=True, max_length=120)
+    domicilio = serializers.CharField(source='cartera.domicilio', required=False, allow_blank=True, max_length=255)
+    # Sin max_length: el usuario puede escribirlo con espacios; validate_rfc lo limpia y valida.
+    rfc = serializers.CharField(source='cartera.rfc', required=False, allow_blank=True)
     pagare = serializers.BooleanField(source='cartera.pagare', required=False)
     notas = serializers.CharField(source='cartera.notas', required=False, allow_blank=True)
 
     class Meta:
         model = Cliente
-        fields = ['id', 'nombre', 'activo', 'celular', 'pagare', 'notas']
+        fields = ['id', 'nombre', 'activo', 'celular', 'domicilio', 'rfc', 'pagare', 'notas']
 
     def validate_nombre(self, value):
         value = _texto(value).upper()
@@ -58,6 +62,13 @@ class ClienteCarteraSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Ya existe un cliente con ese nombre.')
         return value
 
+    def validate_rfc(self, value):
+        value = _texto(value).upper().replace(' ', '')
+        # 12 caracteres persona moral, 13 persona física (letras, fecha AAMMDD y homoclave).
+        if value and not re.fullmatch(r'[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}', value):
+            raise serializers.ValidationError('RFC inválido: 3 o 4 letras, fecha AAMMDD y homoclave (12 o 13 caracteres).')
+        return value
+
     def to_representation(self, instance):
         # Un cliente dado de alta en Inventario todavía no tiene datos de cobranza.
         if not hasattr(instance, 'cartera'):
@@ -67,7 +78,11 @@ class ClienteCarteraSerializer(serializers.ModelSerializer):
     def _guardar_cartera(self, cliente, datos):
         perfil, _ = ClienteCartera.objects.get_or_create(cliente=cliente)
         for campo, valor in datos.items():
-            setattr(perfil, campo, _texto(valor) if campo == 'celular' else valor)
+            if campo in ('celular', 'domicilio'):
+                valor = _texto(valor)
+            elif campo == 'rfc':
+                valor = _texto(valor).upper().replace(' ', '')
+            setattr(perfil, campo, valor)
         perfil.save()
         cliente.cartera = perfil
 
@@ -326,6 +341,10 @@ def linea_venta(linea):
         'producto': producto_de(linea),
         'lote': linea.entrada_detalle.lote_general.codigo if linea.entrada_detalle_id and linea.entrada_detalle.lote_general_id else '',
         'camara': linea.camara.nombre if linea.camara_id else '',
+        # Del lote de origen; vacíos en una venta en resguardo (sin lote).
+        'proveedor': (linea.entrada_detalle.proveedor_origen.nombre
+                      if linea.entrada_detalle_id and linea.entrada_detalle.proveedor_origen_id else ''),
+        'factura': linea.factura_proveedor,
         'cajas': linea.cajas,
         'kilos': str(linea.total_kilos),
         'precio_kilo': str(linea.precio_x_kilo) if linea.precio_x_kilo is not None else None,

@@ -343,6 +343,9 @@ class VentasTests(BaseCartera):
                           ("SAL-3", "N-SAL-3", "IMPORTADORA", "0")])
         self.assertEqual([l["estado"] for l in ventas[0]["lineas"]], ["pendiente", "pendiente"])
         self.assertEqual(ventas[2]["lineas"][0]["estado"], "sin_precio")
+        # Proveedor y factura del lote para rastrear la venta.
+        self.assertEqual(ventas[0]["lineas"][0]["proveedor"], "SAN LORENZO")
+        self.assertIn("factura", ventas[0]["lineas"][0])
 
     def test_verificar_y_reportar_diferencia(self):
         self.assertEqual(self._verificar([self.l1, self.l2], "verificada").status_code, 200)
@@ -553,3 +556,44 @@ class ReportePagosTests(BaseCartera):
         # Solo activos: el cancelado ya no sale.
         hoja = load_workbook(BytesIO(self.client.get("/api/cartera/pagos/excel/", {**params, "estado": "activo"}).content)).active
         self.assertEqual(sum(1 for f in hoja.iter_rows(values_only=True) if f[1] == "CABEZA DE TORO"), 1)
+
+
+class DatosClienteYArchivosTests(BaseCartera):
+    """Domicilio y RFC del cliente en el encabezado del estado de cuenta; depósitos por identificar en Pagos."""
+
+    def test_domicilio_y_rfc_opcionales_y_en_el_estado_de_cuenta(self):
+        url = f"/api/cartera/clientes/{self.cliente.id}/"
+        datos = {"nombre": "CABEZA DE TORO", "activo": True, "celular": "961 123 4567",
+                 "domicilio": " Av.  Central 10,  Tapachula ", "rfc": "cdt 850101 ab1"}
+        r = self.client.put(url, datos, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual((r.data["domicilio"], r.data["rfc"]), ("Av. Central 10, Tapachula", "CDT850101AB1"))
+        self.assertEqual(self.client.put(url, {**datos, "rfc": "XYZ"}, format="json").status_code, 400)
+        # Vacíos se aceptan.
+        self.assertEqual(self.client.put(url, {**datos, "rfc": "", "domicilio": ""}, format="json").status_code, 200)
+        self.client.put(url, datos, format="json")
+
+        respuesta = self.client.get(f"{url}estado-cuenta/excel/", {"empresa": self.imp.id})
+        filas = list(load_workbook(BytesIO(respuesta.content)).active.iter_rows(values_only=True))
+        encabezado = {f[0]: f[1] for f in filas[1:7]}
+        self.assertEqual(encabezado["Domicilio"], "Av. Central 10, Tapachula")
+        self.assertEqual(encabezado["RFC"], "CDT850101AB1")
+        self.assertEqual(encabezado["Teléfono"], "961 123 4567")
+        self.assertEqual(encabezado["Empresa"], "IMPORTADORA")
+        self.assertIn("Nota", [f[0] for f in filas])
+        self.assertEqual(self.client.get(f"{url}estado-cuenta/pdf/").status_code, 200)
+
+    def test_archivos_de_pagos_identificados_agregan_los_por_identificar(self):
+        self._pago("300")
+        self._pago("5000", cliente_id=None)
+        cancelado = self._pago("70", cliente_id=None).data
+        self.client.post(f"/api/cartera/pagos/{cancelado['id']}/cancelar/", {"motivo": "x"}, format="json")
+
+        libro = load_workbook(BytesIO(self.client.get("/api/cartera/pagos/excel/", {"por_identificar": "false"}).content))
+        self.assertEqual(libro.sheetnames, ["Pagos de clientes", "Por identificar"])
+        montos = [f[4] for f in libro["Por identificar"].iter_rows(min_row=2, values_only=True) if f[1] == "POR IDENTIFICAR"]
+        self.assertEqual(montos, [5000])  # solo activos
+        # Sin filtro ya vienen en la lista: no se repiten en otra hoja.
+        libro = load_workbook(BytesIO(self.client.get("/api/cartera/pagos/excel/").content))
+        self.assertEqual(libro.sheetnames, ["Pagos de clientes"])
+        self.assertEqual(self.client.get("/api/cartera/pagos/pdf/", {"por_identificar": "false"}).status_code, 200)

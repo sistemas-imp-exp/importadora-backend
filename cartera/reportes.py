@@ -15,6 +15,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 from inventario.formatos import FORMATO_KG, FORMATO_PRECIO_KG, kg, precio_kg
 from treasury.reportes import (
+    COLOR_ENCABEZADO,
     COLOR_ENCABEZADO_RL,
     COLOR_FILA_CANCELADA,
     COLOR_FILA_CANCELADA_RL,
@@ -61,6 +62,31 @@ def _estilo_tabla(extra=()):
     ])
 
 
+# Ancho útil de la hoja con los márgenes de _documento (carta: 21.59 x 27.94 cm).
+ANCHO_UTIL_CM = {False: 21.59 - 2.4, True: 27.94 - 2.4}
+
+
+def _anchos(proporciones, horizontal=False):
+    """Anchos de columna en proporción, escalados para que la tabla quepa en la hoja."""
+    total = sum(proporciones)
+    return [a * ANCHO_UTIL_CM[horizontal] / total * cm for a in proporciones]
+
+
+def datos_cliente(cliente, perfil, empresa=None):
+    """(etiqueta, valor) del encabezado del estado de cuenta; los vacíos van como guion."""
+    datos = [
+        ('Cliente', cliente.nombre),
+        ('Domicilio', perfil.domicilio if perfil else ''),
+        ('Teléfono', perfil.celular if perfil else ''),
+        ('RFC', perfil.rfc if perfil else ''),
+    ]
+    if empresa is not None:
+        datos.append(('Empresa', empresa.nombre))
+    if perfil and perfil.pagare:
+        datos.append(('Pagaré', 'Firmado'))
+    return [(etiqueta, valor or '—') for etiqueta, valor in datos]
+
+
 def _documento(buffer, titulo, horizontal=False):
     return SimpleDocTemplate(
         buffer, pagesize=landscape(letter) if horizontal else letter, title=titulo,
@@ -105,18 +131,24 @@ def construir_pdf_estado_cuenta(cliente, perfil, renglones, saldos, empresa=None
     buffer = BytesIO()
     documento = _documento(buffer, f'Estado de cuenta - {cliente.nombre}', horizontal=True)
     estilos = _estilos()
-    datos = f"<b>{escape(cliente.nombre)}</b>"
-    if perfil and perfil.celular:
-        datos += f" · Cel. {escape(perfil.celular)}"
-    if perfil and perfil.pagare:
-        datos += " · Pagaré"
-    if empresa is not None:
-        datos += f" · {escape(empresa.nombre)}"
+    etiqueta = ParagraphStyle('dato_etiqueta', parent=ESTILOS['Normal'], fontSize=8.5, fontName='Helvetica-Bold',
+                              textColor=colors.HexColor('#555555'))
+    valor = ParagraphStyle('dato_valor', parent=ESTILOS['Normal'], fontSize=9)
+    datos = Table(
+        [[Paragraph(escape(e), etiqueta), Paragraph(escape(v), valor)] for e, v in datos_cliente(cliente, perfil, empresa)],
+        colWidths=[2.4 * cm, 13 * cm], hAlign='LEFT',
+    )
+    datos.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('TOPPADDING', (0, 0), (-1, -1), 1), ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+        ('LEFTPADDING', (0, 0), (0, -1), 0),
+    ]))
     resumen = ' · '.join(f"{escape(nombre)}: <b>{_dinero(saldo)}</b>" for nombre, saldo in saldos)
     elementos = [
         Paragraph('Importadora y Exportadora de Mariscos de Centro América y el Caribe', estilos['empresa']),
         Paragraph('Estado de cuenta', estilos['titulo']),
-        Paragraph(datos, estilos['subtitulo']),
+        datos,
+        Spacer(1, 0.15 * cm),
         Paragraph(f'Saldo actual — {resumen}', estilos['subtitulo']),
         Paragraph(_generado(), estilos['generado']),
         Spacer(1, 0.4 * cm),
@@ -140,7 +172,7 @@ def construir_pdf_estado_cuenta(cliente, perfil, renglones, saldos, empresa=None
     if len(filas) == 1:
         filas.append(['', '', 'Sin movimientos.', '', '', '', '', '', '', '', ''])
     anchos = [1.9, 1.9, 4.6, 1.9, 2.9, 1.7, 1.8, 2.3, 2.4, 2.4, 2.6]
-    tabla = Table(filas, colWidths=[a * cm for a in anchos], repeatRows=1)
+    tabla = Table(filas, colWidths=_anchos(anchos, horizontal=True), repeatRows=1)
     tabla.setStyle(_estilo_tabla(extra))
     elementos.append(tabla)
     documento.build(elementos, onFirstPage=_pie_pagina_pdf, onLaterPages=_pie_pagina_pdf)
@@ -148,12 +180,25 @@ def construir_pdf_estado_cuenta(cliente, perfil, renglones, saldos, empresa=None
     return buffer
 
 
-def construir_excel_estado_cuenta(cliente, renglones):
+def construir_excel_estado_cuenta(cliente, renglones, perfil=None, empresa=None):
     wb = Workbook()
     ws = wb.active
     ws.title = 'Estado de cuenta'
+    # Encabezado con los datos del cliente y, debajo, la tabla.
+    ws.append(['Estado de cuenta'])
+    ws.cell(row=1, column=1).font = Font(bold=True, size=13)
+    for etiqueta, valor in datos_cliente(cliente, perfil, empresa):
+        ws.append([etiqueta, valor])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True)
+    ws.append([_generado()])
+    ws.cell(row=ws.max_row, column=1).font = Font(italic=True, color='808080')
+    ws.append([])
     ws.append(COLUMNAS_ESTADO)
-    _estilizar_encabezado(ws, len(COLUMNAS_ESTADO))
+    encabezado = ws.max_row
+    for col in range(1, len(COLUMNAS_ESTADO) + 1):
+        celda = ws.cell(row=encabezado, column=col)
+        celda.font = Font(bold=True, color='FFFFFF')
+        celda.fill = PatternFill('solid', fgColor=COLOR_ENCABEZADO)
     gris = PatternFill('solid', fgColor=COLOR_FILA_CANCELADA)
     tachado = Font(strike=True, color='808080')
     for valores, cancelado in filas_estado_cuenta(renglones):
@@ -170,7 +215,7 @@ def construir_excel_estado_cuenta(cliente, renglones):
                 ws.cell(row=fila, column=col).fill = gris
     for col, ancho in zip('ABCDEFGHIJK', (12, 12, 40, 12, 20, 11, 12, 15, 15, 15, 16)):
         ws.column_dimensions[col].width = ancho
-    ws.freeze_panes = 'A2'
+    ws.freeze_panes = f'A{encabezado + 1}'
     return wb
 
 
@@ -222,10 +267,9 @@ def construir_pdf_saldos(empresas, filas, resumido=False, sin_identificar=None):
     total = ['TOTAL', *[_dinero(totales[e.id]) for e in empresas], _dinero(total_conjunto), '', '', '', '']
     tabla_filas.append(total[:columnas] if resumido else total)
     if resumido:
-        # Carta vertical: 18.6 cm útiles entre márgenes.
-        anchos = [8.1 * cm, *[3.5 * cm] * len(empresas), 3.5 * cm]
+        anchos = _anchos([8.1, *[3.5] * len(empresas), 3.5])
     else:
-        anchos = [6.4 * cm, *[3.2 * cm] * len(empresas), 3.2 * cm, 2.2 * cm, 2.8 * cm, 4.2 * cm, 1.4 * cm]
+        anchos = _anchos([6.4, *[3.2] * len(empresas), 3.2, 2.2, 2.8, 4.2, 1.4], horizontal=True)
     tabla = Table(tabla_filas, colWidths=anchos, repeatRows=1)
     ultima = len(tabla_filas) - 1
     tabla.setStyle(_estilo_tabla([
@@ -297,18 +341,9 @@ def _fila_pago(pago):
     ]
 
 
-def construir_pdf_pagos(pagos, filtros):
-    """Los pagos de la pantalla con sus filtros; los cancelados en gris y fuera del total."""
-    buffer = BytesIO()
-    documento = _documento(buffer, 'Pagos de clientes', horizontal=True)
-    estilos = _estilos()
-    elementos = [
-        Paragraph('Importadora y Exportadora de Mariscos de Centro América y el Caribe', estilos['empresa']),
-        Paragraph('Pagos de clientes', estilos['titulo']),
-        *[Paragraph(escape(f), estilos['subtitulo']) for f in filtros],
-        Paragraph(_generado(), estilos['generado']),
-        Spacer(1, 0.4 * cm),
-    ]
+def _tabla_pagos(pagos, texto_vacio):
+    """Tabla de pagos con su total; los cancelados en gris y fuera del total."""
+    celda = ParagraphStyle('celda_pago', parent=ESTILOS['Normal'], fontSize=8, leading=9.5)
     filas = [COLUMNAS_PAGOS]
     extra = []
     total = Decimal('0')
@@ -326,27 +361,51 @@ def construir_pdf_pagos(pagos, filtros):
         else:
             total += monto
     if len(filas) == 1:
-        filas.append(['', 'Sin pagos con estos filtros.', '', '', '', '', '', ''])
+        filas.append(['', Paragraph(texto_vacio, celda), '', '', '', '', '', ''])
     activos = sum(1 for p in pagos if not p.cancelado)
-    filas.append(['', f'Total ({activos} pago(s) activos)', '', '', _dinero(total), '', '', ''])
+    filas.append(['', Paragraph(f'<b>Total ({activos} activo(s))</b>', celda), '', '', _dinero(total), '', '', ''])
     ultima = len(filas) - 1
-    anchos = [2.2, 6.0, 3.4, 3.8, 2.8, 5.0, 2.0, 3.6]
-    tabla = Table(filas, colWidths=[a * cm for a in anchos], repeatRows=1)
+    tabla = Table(filas, colWidths=_anchos([2.1, 5.6, 3.2, 3.4, 2.7, 4.8, 2.0, 3.4], horizontal=True), repeatRows=1)
     tabla.setStyle(_estilo_tabla(extra + [
         ('FONTNAME', (0, ultima), (-1, ultima), 'Helvetica-Bold'),
         ('ALIGN', (4, ultima), (4, ultima), 'RIGHT'),
         ('BACKGROUND', (0, ultima), (-1, ultima), colors.HexColor('#EEF5F5')),
     ]))
-    elementos.append(tabla)
+    return tabla
+
+
+def construir_pdf_pagos(pagos, filtros, por_identificar=None):
+    """
+    Los pagos de la pantalla con sus filtros. `por_identificar`: depósitos aún
+    sin cliente, en su propia sección (no entran al total de los pagos).
+    """
+    buffer = BytesIO()
+    documento = _documento(buffer, 'Pagos de clientes', horizontal=True)
+    estilos = _estilos()
+    seccion = ParagraphStyle('seccion', parent=ESTILOS['Heading2'], fontSize=11.5,
+                             textColor=COLOR_ENCABEZADO_RL, spaceBefore=10, spaceAfter=4)
+    elementos = [
+        Paragraph('Importadora y Exportadora de Mariscos de Centro América y el Caribe', estilos['empresa']),
+        Paragraph('Pagos de clientes', estilos['titulo']),
+        *[Paragraph(escape(f), estilos['subtitulo']) for f in filtros],
+        Paragraph(_generado(), estilos['generado']),
+        Spacer(1, 0.4 * cm),
+        _tabla_pagos(pagos, 'Sin pagos con estos filtros.'),
+    ]
+    if por_identificar is not None:
+        elementos += [
+            Paragraph('Depósitos por identificar', seccion),
+            Paragraph('Pendientes a la fecha: aún no se sabe de qué cliente son, así que no bajan ningún saldo.',
+                      estilos['subtitulo']),
+            Spacer(1, 0.15 * cm),
+            _tabla_pagos(por_identificar, 'No hay depósitos por identificar.'),
+        ]
     documento.build(elementos, onFirstPage=_pie_pagina_pdf, onLaterPages=_pie_pagina_pdf)
     buffer.seek(0)
     return buffer
 
 
-def construir_excel_pagos(pagos, filtros):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = 'Pagos de clientes'
+def _hoja_pagos(ws, pagos, filtros):
     ws.append(COLUMNAS_PAGOS)
     _estilizar_encabezado(ws, len(COLUMNAS_PAGOS))
     gris = PatternFill('solid', fgColor=COLOR_FILA_CANCELADA)
@@ -375,4 +434,14 @@ def construir_excel_pagos(pagos, filtros):
     for col, ancho in zip('ABCDEFGH', (12, 36, 20, 26, 15, 40, 14, 30)):
         ws.column_dimensions[col].width = ancho
     ws.freeze_panes = 'A2'
+
+
+def construir_excel_pagos(pagos, filtros, por_identificar=None):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Pagos de clientes'
+    _hoja_pagos(ws, pagos, filtros)
+    if por_identificar is not None:
+        _hoja_pagos(wb.create_sheet('Por identificar'), por_identificar,
+                    ['Depósitos por identificar pendientes a la fecha (no bajan ningún saldo).'])
     return wb

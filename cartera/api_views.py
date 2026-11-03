@@ -198,7 +198,10 @@ class ClienteCarteraViewSet(
     @action(detail=True, methods=['get'], url_path='estado-cuenta/excel')
     def estado_cuenta_excel(self, request, pk=None):
         cliente = self.get_object()
-        libro = construir_excel_estado_cuenta(cliente, estado_de_cuenta(cliente, self._empresa_filtro()))
+        empresa = self._empresa_filtro()
+        libro = construir_excel_estado_cuenta(
+            cliente, estado_de_cuenta(cliente, empresa), getattr(cliente, 'cartera', None), empresa,
+        )
         return _excel(libro, f'estado_cuenta_cliente_{cliente.id}.xlsx')
 
 
@@ -291,16 +294,33 @@ class PagoClienteViewSet(MovimientoCarteraViewSet):
             textos.append(f"Búsqueda: {params['q'].strip()}")
         return textos
 
+    def _por_identificar(self):
+        """
+        Con ?por_identificar=0 (pestaña de pagos identificados) los archivos
+        agregan aparte los depósitos aún sin cliente, activos y de la empresa
+        filtrada; sin ese filtro ya vienen en la lista.
+        """
+        valor = self.request.query_params.get('por_identificar')
+        if valor is None or _verdadero(valor):
+            return None
+        pendientes = PagoCliente.objects.select_related('empresa', 'usuario').filter(cliente__isnull=True, cancelado=False)
+        if self.request.query_params.get('empresa'):
+            pendientes = pendientes.filter(empresa_id=self.request.query_params['empresa'])
+        return list(pendientes.order_by('-fecha', '-creado'))
+
     @action(detail=False, methods=['get'])
     def pdf(self, request):
-        """Los pagos de la pantalla (mismos filtros) en PDF."""
-        contenido = construir_pdf_pagos(list(self.get_queryset()), self._filtros_texto()).getvalue()
+        """Los pagos de la pantalla (mismos filtros) en PDF, y los depósitos por identificar."""
+        contenido = construir_pdf_pagos(
+            list(self.get_queryset()), self._filtros_texto(), self._por_identificar(),
+        ).getvalue()
         return _descarga(contenido, 'application/pdf', 'pagos_clientes.pdf')
 
     @action(detail=False, methods=['get'])
     def excel(self, request):
-        """Los pagos de la pantalla (mismos filtros) en Excel."""
-        return _excel(construir_excel_pagos(list(self.get_queryset()), self._filtros_texto()), 'pagos_clientes.xlsx')
+        """Los pagos de la pantalla (mismos filtros) en Excel, y los depósitos por identificar en otra hoja."""
+        libro = construir_excel_pagos(list(self.get_queryset()), self._filtros_texto(), self._por_identificar())
+        return _excel(libro, 'pagos_clientes.xlsx')
 
     @action(detail=True, methods=['post'])
     def identificar(self, request, pk=None):

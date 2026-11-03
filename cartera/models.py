@@ -22,6 +22,9 @@ class ClienteCartera(models.Model):
     """Datos de cobranza del cliente (el catálogo es el de Inventario)."""
     cliente = models.OneToOneField(Cliente, on_delete=models.CASCADE, primary_key=True, related_name='cartera')
     celular = models.CharField(max_length=120, blank=True)
+    # Encabezado del estado de cuenta; opcionales.
+    domicilio = models.CharField(max_length=255, blank=True)
+    rfc = models.CharField('RFC', max_length=13, blank=True)
     pagare = models.BooleanField(default=False, help_text='El cliente firmó pagaré.')
     notas = models.TextField(blank=True)
     # Último pago según el Excel del área al arrancar; los pagos capturados
