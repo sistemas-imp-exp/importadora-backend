@@ -3,6 +3,7 @@ from rest_framework.permissions import SAFE_METHODS, BasePermission
 AREA_TESORERIA = "TES"
 AREA_INVENTARIO = "INV"
 AREA_CARTERA = "CAR"
+AREA_GANADO = "GAN"
 AREA_ADMIN = "ADMIN"
 
 
@@ -48,6 +49,10 @@ class AreaInventario(TieneArea):
 
 class AreaCartera(TieneArea):
     area = AREA_CARTERA
+
+
+class AreaGanado(TieneArea):
+    area = AREA_GANADO
 
 
 class AreaInventarioOCartera(BasePermission):

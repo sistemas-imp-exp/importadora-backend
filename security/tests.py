@@ -6,11 +6,12 @@ from django.urls import URLResolver
 from rest_framework.test import APITestCase
 
 import cartera.api_urls
+import ganado.api_urls
 import inventario.api_urls
 import treasury.api_urls
 
 from .models import Area
-from .permissions import AREA_CARTERA, AREA_INVENTARIO, AREA_TESORERIA
+from .permissions import AREA_CARTERA, AREA_GANADO, AREA_INVENTARIO, AREA_TESORERIA
 from .testing import crear_usuario_con_area
 
 
@@ -42,12 +43,13 @@ def _rutas_concretas(modulo_urls, prefijo):
 RUTAS_TESORERIA = _rutas_concretas(treasury.api_urls, "/api/treasury/")
 RUTAS_INVENTARIO = _rutas_concretas(inventario.api_urls, "/api/inventario/")
 RUTAS_CARTERA = _rutas_concretas(cartera.api_urls, "/api/cartera/")
+RUTAS_GANADO = _rutas_concretas(ganado.api_urls, "/api/ganado/")
 
 
 class AreasBaseMigracionTests(TestCase):
     def test_la_migracion_crea_las_areas_de_las_que_depende_el_ruteo(self):
         codigos = set(Area.objects.values_list("codigo", flat=True))
-        self.assertTrue({"TES", "INV", "CAR", "ADMIN"} <= codigos)
+        self.assertTrue({"TES", "INV", "CAR", "GAN", "ADMIN"} <= codigos)
 
 
 class PermisosPorAreaApiTests(APITestCase):
@@ -62,6 +64,7 @@ class PermisosPorAreaApiTests(APITestCase):
         self.assertGreater(len(RUTAS_TESORERIA), 20)
         self.assertGreater(len(RUTAS_INVENTARIO), 20)
         self.assertGreater(len(RUTAS_CARTERA), 10)
+        self.assertGreater(len(RUTAS_GANADO), 10)
 
     def _assert_todas_prohibidas(self, rutas, usuario):
         self.client.force_authenticate(user=usuario)
@@ -71,7 +74,7 @@ class PermisosPorAreaApiTests(APITestCase):
 
     def test_usuario_sin_areas_no_entra_a_ningun_endpoint(self):
         usuario = crear_usuario_con_area("sin_area")
-        self._assert_todas_prohibidas(RUTAS_TESORERIA + RUTAS_INVENTARIO + RUTAS_CARTERA, usuario)
+        self._assert_todas_prohibidas(RUTAS_TESORERIA + RUTAS_INVENTARIO + RUTAS_CARTERA + RUTAS_GANADO, usuario)
 
     def test_inventario_no_entra_a_tesoreria(self):
         self._assert_todas_prohibidas(RUTAS_TESORERIA, crear_usuario_con_area("almacen", AREA_INVENTARIO))
@@ -84,8 +87,12 @@ class PermisosPorAreaApiTests(APITestCase):
         self._assert_todas_prohibidas(RUTAS_CARTERA, crear_usuario_con_area("cajero", AREA_TESORERIA, AREA_INVENTARIO))
         self._assert_todas_prohibidas(RUTAS_TESORERIA + RUTAS_INVENTARIO, crear_usuario_con_area("cobranza", AREA_CARTERA))
 
+    def test_ganado_es_un_area_aparte(self):
+        self._assert_todas_prohibidas(RUTAS_GANADO, crear_usuario_con_area("otras", AREA_TESORERIA, AREA_INVENTARIO, AREA_CARTERA))
+        self._assert_todas_prohibidas(RUTAS_TESORERIA + RUTAS_INVENTARIO + RUTAS_CARTERA, crear_usuario_con_area("vaquero", AREA_GANADO))
+
     def test_anonimo_recibe_401(self):
-        for ruta in (RUTAS_TESORERIA[0], RUTAS_INVENTARIO[0], RUTAS_CARTERA[0]):
+        for ruta in (RUTAS_TESORERIA[0], RUTAS_INVENTARIO[0], RUTAS_CARTERA[0], RUTAS_GANADO[0]):
             with self.subTest(ruta=ruta):
                 self.assertEqual(self.client.get(ruta).status_code, 401)
 
@@ -203,6 +210,20 @@ class CarteraSoloLecturaApiTests(APITestCase):
 
     def test_consulta_pero_no_escribe(self):
         for ruta in RUTAS_CARTERA:
+            with self.subTest(ruta=ruta):
+                self.assertNotEqual(self.client.get(ruta).status_code, 403)
+                for metodo in ("post", "put", "patch", "delete"):
+                    self.assertEqual(getattr(self.client, metodo)(ruta, {}, format="json").status_code, 403)
+
+
+class GanadoSoloLecturaApiTests(APITestCase):
+    """Ganado en solo lectura: consulta y descarga todo, no escribe nada."""
+
+    def setUp(self):
+        self.client.force_authenticate(user=crear_usuario_con_area("lector", AREA_GANADO, solo_lectura=True))
+
+    def test_consulta_pero_no_escribe(self):
+        for ruta in RUTAS_GANADO:
             with self.subTest(ruta=ruta):
                 self.assertNotEqual(self.client.get(ruta).status_code, 403)
                 for metodo in ("post", "put", "patch", "delete"):

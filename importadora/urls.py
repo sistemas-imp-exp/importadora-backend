@@ -8,6 +8,7 @@ urlpatterns = [
     path('api/treasury/', include('treasury.api_urls')),
     path('api/inventario/', include('inventario.api_urls')),
     path('api/cartera/', include('cartera.api_urls')),
+    path('api/ganado/', include('ganado.api_urls')),
     # Resguardos los comparten Inventario y Cartera: ruta propia con permiso de cualquiera de las dos.
     path('api/resguardos/', include('inventario.resguardos_urls')),
     path("api/auth/", include("accounts.urls")),
