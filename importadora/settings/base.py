@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     'treasury',
     'inventario',
     'cartera',
+    'ganado',
     "accounts",
     "security",
     'rest_framework',
