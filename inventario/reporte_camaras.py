@@ -38,6 +38,8 @@ BLOQUES = [
     (Producto.PRESENTACION_COLAS, "Colas"),
     ("", "Sin presentación"),
 ]
+# Valor del filtro ?presentacion= para los productos sin presentación.
+SIN_PRESENTACION = "sin"
 COLUMNAS = ["TALLA", "TIPO", "PROVEEDOR", "PESO MASTER", "MASTER", "KILOGRAMOS", "EXISTENCIA"]
 
 
@@ -48,11 +50,15 @@ def _clave_talla(talla):
 
 
 # ---------------------------------------------------------------- cálculo
-def lotes_con_existencia(fecha, camara_id=None, empresa_id=None):
+def lotes_con_existencia(fecha, camara_id=None, empresa_id=None, filtros=None):
     """
     Lotes (EntradaDetalle) con kilos disponibles > 0 al cierre de `fecha`,
     solo los que están en una cámara. `kilos_a_fecha` = kilos que entraron
     menos los que salieron hasta ese día.
+
+    `filtros`: listas de valores aceptados por campo — presentacion (con
+    SIN_PRESENTACION para las vacías), talla, tipo, categoria y proveedor
+    (ids); una lista vacía o ausente no filtra.
     """
     lotes = (
         EntradaDetalle.objects
@@ -66,10 +72,20 @@ def lotes_con_existencia(fecha, camara_id=None, empresa_id=None):
         lotes = lotes.filter(camara_id=camara_id)
     if empresa_id:
         lotes = lotes.filter(entrada__empresa_id=empresa_id)
+    filtros = filtros or {}
+    if filtros.get("presentacion"):
+        lotes = lotes.filter(producto__presentacion__in=[
+            "" if valor == SIN_PRESENTACION else valor for valor in filtros["presentacion"]
+        ])
+    for campo in ("talla", "tipo", "categoria"):
+        if filtros.get(campo):
+            lotes = lotes.filter(**{f"producto__{campo}__in": filtros[campo]})
+    if filtros.get("proveedor"):
+        lotes = lotes.filter(proveedor_origen_id__in=filtros["proveedor"])
     return lotes
 
 
-def construir_reporte(fecha, camara_id=None, empresa_id=None):
+def construir_reporte(fecha, camara_id=None, empresa_id=None, filtros=None):
     """
     Estructura lista para pintar (JSON, PDF o Excel):
 
@@ -84,7 +100,7 @@ def construir_reporte(fecha, camara_id=None, empresa_id=None):
     arbol = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(
         lambda: defaultdict(lambda: [0, CERO])))))
     camaras = {}
-    for lote in lotes_con_existencia(fecha, camara_id, empresa_id):
+    for lote in lotes_con_existencia(fecha, camara_id, empresa_id, filtros):
         camaras[lote.camara_id] = lote.camara.nombre
         proveedor = lote.proveedor_origen.nombre if lote.proveedor_origen_id else "—"
         celda = arbol[lote.camara_id][lote.producto.presentacion][lote.producto.talla][lote.producto.tipo][

@@ -113,6 +113,34 @@ class ReporteExistenciasCamaraTests(APITestCase):
         self.assertIn("A4:A5", rangos)
         self.assertIn("G4:G5", rangos)
 
+    def test_filtros_de_producto_y_proveedor_en_pantalla_y_archivos(self):
+        sin_presentacion = Producto.objects.create(talla="U-10", tipo="FREEZADO", categoria="ESPECIAL")
+        self._lote("ACUAMAYA", sin_presentacion, 10, 7, "2026-09-01")
+        hoy = date(2026, 9, 24)
+
+        solo_colas = construir_reporte(hoy, self.mexideli.id, filtros={"presentacion": ["colas"]})
+        self.assertEqual([b["etiqueta"] for b in solo_colas[0]["bloques"]], ["Colas"])
+        self.assertEqual(solo_colas[0]["total"], Decimal("1500"))
+        sin = construir_reporte(hoy, self.mexideli.id, filtros={"presentacion": ["sin"]})
+        self.assertEqual(sin[0]["total"], Decimal("70"))
+        # Varias tallas a la vez, y el total es solo de lo filtrado.
+        tallas = construir_reporte(hoy, self.mexideli.id, filtros={"talla": ["30-40", "100-120"]})
+        self.assertEqual(tallas[0]["total"], Decimal("24932"))
+        cacesa = Proveedor.objects.get(nombre="CACESA")
+        prov = construir_reporte(hoy, filtros={"proveedor": [cacesa.id], "tipo": ["FREEZADO"]})
+        self.assertEqual([(c["camara"]["nombre"], c["total"]) for c in prov],
+                         [("IMPORTADORA", Decimal("90")), ("MEXIDELI", Decimal("9420"))])
+        self.assertEqual(construir_reporte(hoy, filtros={"categoria": ["ESPECIAL"]})[0]["total"], Decimal("70"))
+
+        params = {"fecha": "2026-09-24", "presentacion": "entero", "talla": ["30-40"], "proveedor": [cacesa.id]}
+        self.assertEqual(self.client.get(URL, params).data["camaras"][1]["total"], "7920.000")
+        hoja = load_workbook(BytesIO(self.client.get(URL + "excel/", params).content))["MEXIDELI"]
+        self.assertIn("Talla: 30-40", hoja["C1"].value)
+        self.assertIn("Proveedor: CACESA", hoja["C1"].value)
+        self.assertEqual(self.client.get(URL + "pdf/", params).status_code, 200)
+        self.assertEqual(self.client.get(URL, {"presentacion": "otra"}).status_code, 400)
+        self.assertEqual(self.client.get(URL, {"proveedor": "x"}).status_code, 400)
+
     def test_fecha_futura_o_invalida_se_rechaza(self):
         manana = (timezone.localdate() + timedelta(days=1)).isoformat()
         self.assertEqual(self.client.get(URL, {"fecha": manana}).status_code, 400)
