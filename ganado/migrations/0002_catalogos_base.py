@@ -1,13 +1,14 @@
 from django.db import migrations
 
 # Ranchos de docs/GANADO y categorías de sus hojas; el área agrega lo que falte.
+# Orden de reportes: adultos a crías, hembra antes que macho.
 RANCHOS = ['LA GLORIA', 'LOS COQUITOS', 'MEZQUITE', 'SAN JUDITAS', 'TRINIDAD']
 CATEGORIAS = {
     'BOVINO': [
-        ('VACA', 'H'), ('NOVILLA', 'H'), ('BECERRA', 'H'),
-        ('TORO', 'M'), ('SEMENTAL', 'M'), ('NOVILLO', 'M'), ('BECERRO', 'M'),
+        ('VACA', 'H'), ('TORO', 'M'), ('SEMENTAL', 'M'),
+        ('NOVILLA', 'H'), ('NOVILLO', 'M'), ('BECERRA', 'H'), ('BECERRO', 'M'),
     ],
-    'EQUINO': [('YEGUA', 'H'), ('POTRANCA', 'H'), ('CABALLO', 'M'), ('POTRO', 'M')],
+    'EQUINO': [('YEGUA', 'H'), ('CABALLO', 'M'), ('POTRANCA', 'H'), ('POTRO', 'M')],
 }
 
 
