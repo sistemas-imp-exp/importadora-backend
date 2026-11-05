@@ -48,7 +48,14 @@ from .api_serializers import (
     RanchoSerializer,
     UsuarioResponsableSerializer,
 )
-from .reportes_deudas import construir_excel_estado_cuenta, construir_pdf_estado_cuenta
+from .reportes_deudas import (
+    construir_excel_estado_cuenta,
+    construir_excel_reporte_general,
+    construir_pdf_estado_cuenta,
+    construir_pdf_reporte_general,
+    reporte_general,
+    serializar_reporte_general,
+)
 from .saldos import historial, resumen_dia
 
 
@@ -479,6 +486,42 @@ class DeudorViewSet(
         response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         response['Content-Disposition'] = f'attachment; filename="estado_cuenta_{deudor.id}.xlsx"'
         libro.save(response)
+        return response
+
+    def _reporte_general(self):
+        """(reporte, subtítulo con los filtros) de ?tipo=T|E&divisa=<id>&solo_con_saldo=0|1 (1 por omisión)."""
+        params = self.request.query_params
+        tipo = params.get('tipo') or None
+        if tipo and tipo not in dict(Deudor.TIPO_CHOICES):
+            raise DRFValidationError({'tipo': 'Tipo inválido: usa T (trabajador) o E (externo).'})
+        divisa = Divisa.objects.filter(pk=params['divisa']).first() if params.get('divisa', '').isdigit() else None
+        if params.get('divisa') and not divisa:
+            raise DRFValidationError({'divisa': 'Divisa inválida.'})
+        solo_con_saldo = params.get('solo_con_saldo', '1').lower() not in ('0', 'false', 'no')
+        partes = [dict(Deudor.TIPO_CHOICES)[tipo] + 's' if tipo else 'Todos los deudores']
+        if divisa:
+            partes.append(divisa.codigo)
+        partes.append('solo con saldo' if solo_con_saldo else 'incluye pagadas')
+        return reporte_general(tipo, divisa.id if divisa else None, solo_con_saldo), ' · '.join(partes)
+
+    @action(detail=False, methods=['get'])
+    def reporte(self, request):
+        reporte, _ = self._reporte_general()
+        return Response(serializar_reporte_general(reporte))
+
+    @action(detail=False, methods=['get'], url_path='reporte/pdf')
+    def reporte_pdf(self, request):
+        reporte, subtitulo = self._reporte_general()
+        response = HttpResponse(construir_pdf_reporte_general(reporte, subtitulo).getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="reporte_deudas_{timezone.localdate():%Y-%m-%d}.pdf"'
+        return response
+
+    @action(detail=False, methods=['get'], url_path='reporte/excel')
+    def reporte_excel(self, request):
+        reporte, subtitulo = self._reporte_general()
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = f'attachment; filename="reporte_deudas_{timezone.localdate():%Y-%m-%d}.xlsx"'
+        construir_excel_reporte_general(reporte, subtitulo).save(response)
         return response
 
 

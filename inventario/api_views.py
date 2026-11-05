@@ -1,4 +1,6 @@
 
+from decimal import Decimal
+
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Prefetch, Q
 from django.http import HttpResponse
@@ -251,6 +253,8 @@ class SalidaViewSet(viewsets.ModelViewSet):
             # descargando TODAS las entradas.
             'detalles__producto',
             'detalles__entrada_detalle__proveedor_origen',
+            'detalles__entrada_detalle__lote_general',
+            'detalles__entrada_detalle__entrada',
             'detalles__verificacion_cartera__usuario',
             'detalles__retiros',
             'detalles__retiro_de__salida',
@@ -289,6 +293,9 @@ class SalidaViewSet(viewsets.ModelViewSet):
                 | Q(notas__icontains=busqueda)
                 | Q(detalles__producto__talla__icontains=busqueda)
                 | Q(detalles__producto__tipo__icontains=busqueda)
+                # Recibo (lote) de la línea: el propio o, si llegó por traslado, el de origen.
+                | Q(detalles__entrada_detalle__lote_general__codigo__icontains=busqueda)
+                | Q(detalles__entrada_detalle__movimiento_camara_como_destino__entrada_detalle_origen__lote_general__codigo__icontains=busqueda)
             ).distinct()
 
         desde = params.get('desde')
@@ -312,7 +319,55 @@ class SalidaViewSet(viewsets.ModelViewSet):
                 'detalles__entrada_detalle__movimiento_camara_como_destino__entrada_detalle_origen__lote_general',
             )
         )
-        return _respuesta_excel(libro_salidas(salidas), "salidas.xlsx")
+        busqueda = (request.query_params.get('busqueda') or '').strip()
+        return _respuesta_excel(libro_salidas(salidas, busqueda), "salidas.xlsx")
+
+    @action(detail=False, methods=['get'], url_path='por-recibo')
+    def por_recibo(self, request):
+        """
+        Salidas que ha tenido un recibo de ingreso (?recibo=IMP2083), una fila por
+        línea: ventas, retiros de resguardo y traslados a otra cámara. El recibo de
+        cada línea es el de documento_origen (el de destino si llegó por traslado),
+        el mismo que muestran Existencias y Salidas.
+        """
+        recibo = (request.query_params.get('recibo') or '').strip()
+        if not recibo:
+            return Response({'detail': 'Indica el recibo.'}, status=400)
+        origen = 'entrada_detalle__movimiento_camara_como_destino__entrada_detalle_origen'
+        candidatas = (
+            SalidaDetalle.objects
+            .filter(
+                Q(entrada_detalle__lote_general__codigo=recibo)
+                | Q(entrada_detalle__lote_general__isnull=True, **{f'{origen}__lote_general__codigo': recibo})
+            )
+            .select_related(
+                'salida__cliente', 'producto', 'camara', 'entrada_detalle__entrada',
+                'entrada_detalle__lote_general', f'{origen}__entrada', f'{origen}__lote_general',
+            )
+            .order_by('-salida__fecha', '-salida_id', 'id')
+        )
+        lineas = [d for d in candidatas if d.entrada_detalle.documento_origen['recibo'] == recibo]
+        return Response({
+            'recibo': recibo,
+            'total_kilos': str(sum((d.total_kilos - d.kilos_resguardo for d in lineas), Decimal('0'))),
+            'lineas': [
+                {
+                    'id': d.id,
+                    'salida_id': d.salida_id,
+                    'fecha': d.salida.fecha,
+                    'folio_de_salida': d.salida.folio_de_salida,
+                    'folio_retiro': d.salida.folio_retiro,
+                    'cliente': d.salida.cliente.nombre if d.salida.cliente_id else None,
+                    'talla': d.producto.talla,
+                    'tipo': d.producto.tipo,
+                    'camara': d.camara.nombre if d.camara_id else '',
+                    'cajas': d.cajas,
+                    'total_kilos': str(d.total_kilos - d.kilos_resguardo),
+                    'notas': ' · '.join(x for x in (d.salida.notas, d.notas) if x),
+                }
+                for d in lineas
+            ],
+        })
 
     def perform_create(self, serializer):
         serializer.save(creado_por=self.request.user)

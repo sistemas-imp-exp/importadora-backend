@@ -254,3 +254,189 @@ def construir_excel_estado_cuenta(deudor, deudas):
     ws_resumen.column_dimensions["A"].width = 12
     ws_resumen.column_dimensions["B"].width = 30
     return wb
+
+
+# ---------------------------------------------------------------- reporte general
+def reporte_general(tipo=None, divisa_id=None, solo_con_saldo=True):
+    """
+    Cuánto se debe a hoy: una fila por deudor y divisa (las divisas no se
+    suman) con sus deudas abiertas, total, abonado, saldo y la fecha de la
+    deuda abierta más antigua; y los totales por divisa. Sin canceladas.
+    """
+    deudas = (
+        Deuda.objects.con_saldo().filter(cancelada=False)
+        .select_related("deudor", "divisa")
+        .order_by("divisa__codigo", "deudor__nombre", "deudor_id", "fecha")
+    )
+    if tipo:
+        deudas = deudas.filter(deudor__tipo=tipo)
+    if divisa_id:
+        deudas = deudas.filter(divisa_id=divisa_id)
+
+    filas = {}
+    for deuda in deudas:
+        fila = filas.setdefault((deuda.divisa_id, deuda.deudor_id), {
+            "deudor": deuda.deudor, "divisa": deuda.divisa, "abiertas": 0, "desde": None,
+            "total": Decimal("0"), "abonado": Decimal("0"), "saldo": Decimal("0"),
+        })
+        fila["total"] += deuda.total
+        fila["abonado"] += deuda.abonado
+        fila["saldo"] += deuda.saldo
+        if deuda.saldo > 0:
+            fila["abiertas"] += 1
+            # Vienen por fecha: la primera abierta es la más antigua.
+            fila["desde"] = fila["desde"] or deuda.fecha
+    filas = [f for f in filas.values() if not solo_con_saldo or f["saldo"] > 0]
+    # Por divisa y, dentro, el que más debe primero.
+    filas.sort(key=lambda f: (f["divisa"].codigo, -f["saldo"], f["deudor"].nombre))
+
+    totales = {}
+    for fila in filas:
+        total = totales.setdefault(fila["divisa"].codigo, {
+            "divisa": fila["divisa"], "deudores": 0, "abiertas": 0,
+            "total": Decimal("0"), "abonado": Decimal("0"), "saldo": Decimal("0"),
+        })
+        total["deudores"] += 1
+        for campo in ("abiertas", "total", "abonado", "saldo"):
+            total[campo] += fila[campo]
+    return {"filas": filas, "totales": list(totales.values())}
+
+
+def serializar_reporte_general(reporte):
+    def divisa(d):
+        return {"id": d.id, "codigo": d.codigo, "simbolo": d.simbolo}
+
+    def importes(f):
+        return {campo: str(f[campo]) for campo in ("total", "abonado", "saldo")}
+
+    return {
+        "filas": [
+            {
+                "deudor": {"id": f["deudor"].id, "nombre": f["deudor"].nombre, "tipo": f["deudor"].tipo,
+                           "tipo_display": f["deudor"].get_tipo_display()},
+                "divisa": divisa(f["divisa"]), "abiertas": f["abiertas"],
+                "desde": f["desde"].isoformat() if f["desde"] else None, **importes(f),
+            }
+            for f in reporte["filas"]
+        ],
+        "totales": [
+            {"divisa": divisa(t["divisa"]), "deudores": t["deudores"], "abiertas": t["abiertas"], **importes(t)}
+            for t in reporte["totales"]
+        ],
+    }
+
+
+COLUMNAS_GENERAL = ["Deudor", "Tipo", "Divisa", "Deudas abiertas", "Total", "Abonado", "Saldo", "Deuda más antigua"]
+
+
+def construir_pdf_reporte_general(reporte, subtitulo=""):
+    buffer = BytesIO()
+    documento = SimpleDocTemplate(
+        buffer, pagesize=letter, leftMargin=1.5 * cm, rightMargin=1.5 * cm, topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm, title="Reporte general de deudas",
+    )
+    estilo_empresa = ParagraphStyle(
+        "empresa", parent=ESTILOS["Heading1"], fontSize=15, textColor=COLOR_ENCABEZADO_RL, spaceAfter=1,
+    )
+    estilo_titulo = ParagraphStyle("titulo", parent=ESTILOS["Normal"], fontSize=12, spaceAfter=4)
+    estilo_subtitulo = ParagraphStyle(
+        "subtitulo", parent=ESTILOS["Normal"], fontSize=9.5, textColor=colors.HexColor("#444444"), spaceAfter=2,
+    )
+    estilo_generado = ParagraphStyle(
+        "generado", parent=ESTILOS["Normal"], fontSize=8, textColor=colors.HexColor("#999999"), spaceBefore=4,
+    )
+    elementos = [
+        Paragraph("Importadora y Exportadora de Mariscos de Centro América y el Caribe", estilo_empresa),
+        Paragraph("Reporte general de deudas", estilo_titulo),
+    ]
+    if subtitulo:
+        elementos.append(Paragraph(escape(subtitulo), estilo_subtitulo))
+    elementos += [
+        Paragraph(f"Saldos al {timezone.localtime(timezone.now()).strftime('%d/%m/%Y %H:%M')}", estilo_generado),
+        Spacer(1, 0.4 * cm),
+    ]
+
+    if not reporte["filas"]:
+        elementos.append(Paragraph("No hay deudas con esos filtros.", ESTILOS["Normal"]))
+    else:
+        filas = [COLUMNAS_GENERAL]
+        estilo = [
+            ("BACKGROUND", (0, 0), (-1, 0), COLOR_ENCABEZADO_RL),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DDDDDD")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (3, 0), (6, -1), "RIGHT"),
+            ("ALIGN", (7, 0), (7, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]
+        celda = ParagraphStyle("celda", parent=ESTILOS["Normal"], fontSize=8.5, leading=10)
+        for f in reporte["filas"]:
+            s = f["divisa"].simbolo
+            filas.append([
+                Paragraph(escape(f["deudor"].nombre), celda), f["deudor"].get_tipo_display(), f["divisa"].codigo,
+                f["abiertas"], _dinero(s, f["total"]), _dinero(s, f["abonado"]), _dinero(s, f["saldo"]),
+                f["desde"].strftime("%d/%m/%Y") if f["desde"] else "",
+            ])
+        for t in reporte["totales"]:
+            s = t["divisa"].simbolo
+            filas.append([
+                f"Total {t['divisa'].codigo} ({t['deudores']} deudores)", "", t["divisa"].codigo, t["abiertas"],
+                _dinero(s, t["total"]), _dinero(s, t["abonado"]), _dinero(s, t["saldo"]), "",
+            ])
+            fila = len(filas) - 1
+            estilo += [
+                ("SPAN", (0, fila), (1, fila)),
+                ("FONTNAME", (0, fila), (-1, fila), "Helvetica-Bold"),
+                ("BACKGROUND", (0, fila), (-1, fila), colors.HexColor("#EEF3F3")),
+            ]
+        tabla = Table(filas, colWidths=[5.2 * cm, 1.9 * cm, 1.3 * cm, 1.6 * cm, 2.4 * cm, 2.4 * cm, 2.4 * cm, 1.9 * cm],
+                      repeatRows=1)
+        tabla.setStyle(TableStyle(estilo))
+        elementos.append(tabla)
+
+    documento.build(elementos, onFirstPage=_pie_pagina_pdf, onLaterPages=_pie_pagina_pdf)
+    buffer.seek(0)
+    return buffer
+
+
+def construir_excel_reporte_general(reporte, subtitulo=""):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Deudas"
+    ws.append(COLUMNAS_GENERAL)
+    _estilizar_encabezado(ws, len(COLUMNAS_GENERAL))
+    for f in reporte["filas"]:
+        ws.append([
+            f["deudor"].nombre, f["deudor"].get_tipo_display(), f["divisa"].codigo, f["abiertas"],
+            float(f["total"]), float(f["abonado"]), float(f["saldo"]), f["desde"],
+        ])
+        fila = ws.max_row
+        for col in (5, 6, 7):
+            ws.cell(row=fila, column=col).number_format = "#,##0.00"
+        ws.cell(row=fila, column=8).number_format = "DD/MM/YYYY"
+
+    # Totales por divisa con fórmulas: siguen cuadrando si alguien edita el archivo.
+    ultima = ws.max_row
+    ws.append([])
+    negrita = Font(bold=True)
+    for t in reporte["totales"]:
+        codigo = t["divisa"].codigo
+        ws.append([f"Total {codigo}", "", codigo])
+        fila = ws.max_row
+        for col, letra in ((4, "D"), (5, "E"), (6, "F"), (7, "G")):
+            celda = ws.cell(row=fila, column=col, value=f'=SUMIF($C$2:$C${ultima},"{codigo}",{letra}2:{letra}{ultima})')
+            celda.number_format = "#,##0" if col == 4 else "#,##0.00"
+        for col in range(1, len(COLUMNAS_GENERAL) + 1):
+            ws.cell(row=fila, column=col).font = negrita
+    if subtitulo:
+        ws.append([])
+        ws.append([f"Filtros: {subtitulo}"])
+    ws.append([f"Saldos al {timezone.localtime(timezone.now()).strftime('%d/%m/%Y %H:%M')}"])
+    for col, ancho in zip("ABCDEFGH", (36, 12, 8, 15, 15, 15, 15, 17)):
+        ws.column_dimensions[col].width = ancho
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:H{ultima}"
+    return wb

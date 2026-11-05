@@ -68,6 +68,7 @@ class ReporteExistenciasCamaraTests(APITestCase):
         self.assertEqual([t["talla"] for t in entero["tallas"]], ["30-40", "100-120"])
         talla_30_40 = entero["tallas"][0]
         self.assertEqual(talla_30_40["existencia"], Decimal("24732.00"))
+        self.assertEqual(talla_30_40["tipos"][0]["total"], Decimal("24732.00"))
         filas = talla_30_40["tipos"][0]["filas"]
         self.assertEqual([(f["proveedor"], f["cajas"], f["kilos"]) for f in filas],
                          [("CACESA", 440, Decimal("7920")), ("MER SEAFOOD", 934, Decimal("16812"))])
@@ -94,6 +95,21 @@ class ReporteExistenciasCamaraTests(APITestCase):
         solo_selectos = construir_reporte(date(2026, 9, 24), empresa_id=selectos.id)
         self.assertEqual([c["total"] for c in solo_selectos], [Decimal("60")])
 
+    def test_resumen_mexico_suma_sus_camaras_como_una_sola(self):
+        arcosa = Camara.objects.create(nombre="ARCOSA", tipo=Camara.TIPO_TERCERO)
+        self._lote("CACESA", self.p_30_40, 18, 10, "2026-09-01", camara=arcosa)
+
+        reporte = construir_reporte(date(2026, 9, 24), camara_id="mexico")
+        self.assertEqual(len(reporte), 1)
+        resumen = reporte[0]
+        self.assertEqual(resumen["camara"]["nombre"], "CÁMARAS DE MÉXICO")
+        # IMPORTADORA no entra; CACESA 30-40 de MEXIDELI y ARCOSA queda en una sola fila.
+        self.assertEqual(resumen["total"], Decimal("26612"))
+        filas = resumen["bloques"][0]["tallas"][0]["tipos"][0]["filas"]
+        self.assertEqual([(f["proveedor"], f["cajas"]) for f in filas], [("CACESA", 450), ("MER SEAFOOD", 934)])
+
+        self.assertEqual(self.client.get(URL + "excel/", {"fecha": "2026-09-24", "camara": "mexico"}).status_code, 200)
+
     def test_endpoints_json_pdf_y_excel(self):
         params = {"fecha": "2026-09-24", "camara": self.mexideli.id}
         datos = self.client.get(URL, params)
@@ -108,10 +124,40 @@ class ReporteExistenciasCamaraTests(APITestCase):
         self.assertEqual(excel.status_code, 200)
         hoja = load_workbook(BytesIO(excel.content))["MEXIDELI"]
         self.assertEqual(hoja["A2"].value, "TALLA")
-        # Talla y existencia combinadas a lo alto de sus dos proveedores (fila 4-5, tras el rótulo del bloque).
+        self.assertEqual(hoja["G2"].value, "TOTAL TIPO")
+        # Talla, tipo, total del tipo y existencia combinadas a lo alto de sus dos proveedores
+        # (fila 4-5, tras el rótulo del bloque).
         rangos = {str(r) for r in hoja.merged_cells.ranges}
-        self.assertIn("A4:A5", rangos)
-        self.assertIn("G4:G5", rangos)
+        self.assertTrue({"A4:A5", "B4:B5", "G4:G5", "H4:H5"} <= rangos)
+        self.assertEqual(hoja["G4"].value, 24732)
+
+    def test_filtros_de_producto_y_proveedor_en_pantalla_y_archivos(self):
+        sin_presentacion = Producto.objects.create(talla="U-10", tipo="FREEZADO", categoria="ESPECIAL")
+        self._lote("ACUAMAYA", sin_presentacion, 10, 7, "2026-09-01")
+        hoy = date(2026, 9, 24)
+
+        solo_colas = construir_reporte(hoy, self.mexideli.id, filtros={"presentacion": ["colas"]})
+        self.assertEqual([b["etiqueta"] for b in solo_colas[0]["bloques"]], ["Colas"])
+        self.assertEqual(solo_colas[0]["total"], Decimal("1500"))
+        sin = construir_reporte(hoy, self.mexideli.id, filtros={"presentacion": ["sin"]})
+        self.assertEqual(sin[0]["total"], Decimal("70"))
+        # Varias tallas a la vez, y el total es solo de lo filtrado.
+        tallas = construir_reporte(hoy, self.mexideli.id, filtros={"talla": ["30-40", "100-120"]})
+        self.assertEqual(tallas[0]["total"], Decimal("24932"))
+        cacesa = Proveedor.objects.get(nombre="CACESA")
+        prov = construir_reporte(hoy, filtros={"proveedor": [cacesa.id], "tipo": ["FREEZADO"]})
+        self.assertEqual([(c["camara"]["nombre"], c["total"]) for c in prov],
+                         [("IMPORTADORA", Decimal("90")), ("MEXIDELI", Decimal("9420"))])
+        self.assertEqual(construir_reporte(hoy, filtros={"categoria": ["ESPECIAL"]})[0]["total"], Decimal("70"))
+
+        params = {"fecha": "2026-09-24", "presentacion": "entero", "talla": ["30-40"], "proveedor": [cacesa.id]}
+        self.assertEqual(self.client.get(URL, params).data["camaras"][1]["total"], "7920.000")
+        hoja = load_workbook(BytesIO(self.client.get(URL + "excel/", params).content))["MEXIDELI"]
+        self.assertIn("Talla: 30-40", hoja["C1"].value)
+        self.assertIn("Proveedor: CACESA", hoja["C1"].value)
+        self.assertEqual(self.client.get(URL + "pdf/", params).status_code, 200)
+        self.assertEqual(self.client.get(URL, {"presentacion": "otra"}).status_code, 400)
+        self.assertEqual(self.client.get(URL, {"proveedor": "x"}).status_code, 400)
 
     def test_fecha_futura_o_invalida_se_rechaza(self):
         manana = (timezone.localdate() + timedelta(days=1)).isoformat()

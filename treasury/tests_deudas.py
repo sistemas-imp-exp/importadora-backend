@@ -138,6 +138,46 @@ class DeudasApiTests(APITestCase):
         r = self.client.get(f"/api/treasury/deudores/{self.deudor.id}/estado-cuenta/excel/")
         self.assertEqual(r.status_code, 200)
 
+    def test_reporte_general_por_deudor_y_divisa(self):
+        self._abonar("250")
+        Deuda.objects.create(deudor=self.deudor, concepto="Préstamo", divisa=self.mxn, monto_inicial=Decimal("500"),
+                             fecha=HOY - timedelta(days=9), usuario=self.usuario)
+        Deuda.objects.create(deudor=self.deudor, concepto="Dólares", divisa=self.usd, monto_inicial=Decimal("40"),
+                             fecha=HOY, usuario=self.usuario)
+        externo = Deudor.objects.create(nombre="Pesca Sur", tipo=Deudor.EXTERNO, usuario=self.usuario)
+        Deuda.objects.create(deudor=externo, concepto="Venta", divisa=self.mxn, monto_inicial=Decimal("300"),
+                             fecha=HOY, usuario=self.usuario, cancelada=True, motivo_cancelacion="x")
+        pagado = Deudor.objects.create(nombre="Ya pagó", tipo=Deudor.EXTERNO, usuario=self.usuario)
+        deuda_pagada = Deuda.objects.create(deudor=pagado, concepto="Venta", divisa=self.mxn,
+                                            monto_inicial=Decimal("100"), fecha=HOY, usuario=self.usuario)
+        self._abonar("100", deuda=deuda_pagada)
+
+        r = self.client.get("/api/treasury/deudores/reporte/")
+        self.assertEqual(r.status_code, 200)
+        # Las divisas no se suman: una fila por divisa; canceladas y pagadas fuera.
+        self.assertEqual(
+            [(f["deudor"]["nombre"], f["divisa"]["codigo"], f["abiertas"], f["saldo"], f["desde"]) for f in r.data["filas"]],
+            [("Juan Pérez", "MXN", 2, "1250", (HOY - timedelta(days=9)).isoformat()),
+             ("Juan Pérez", "USD", 1, "40", HOY.isoformat())],
+        )
+        self.assertEqual([(t["divisa"]["codigo"], t["saldo"]) for t in r.data["totales"]], [("MXN", "1250"), ("USD", "40")])
+
+        r = self.client.get("/api/treasury/deudores/reporte/", {"solo_con_saldo": "0", "tipo": "E"})
+        self.assertEqual([(f["deudor"]["nombre"], f["saldo"]) for f in r.data["filas"]], [("Ya pagó", "0")])
+        r = self.client.get("/api/treasury/deudores/reporte/", {"divisa": self.usd.id})
+        self.assertEqual(len(r.data["filas"]), 1)
+        self.assertEqual(self.client.get("/api/treasury/deudores/reporte/", {"tipo": "X"}).status_code, 400)
+
+        r = self.client.get("/api/treasury/deudores/reporte/pdf/")
+        self.assertEqual((r.status_code, r["Content-Type"]), (200, "application/pdf"))
+        r = self.client.get("/api/treasury/deudores/reporte/excel/")
+        self.assertEqual(r.status_code, 200)
+        from io import BytesIO
+        from openpyxl import load_workbook
+        hoja = load_workbook(BytesIO(r.content)).active
+        self.assertEqual([c.value for c in hoja[2]][:4], ["Juan Pérez", "Trabajador", "MXN", 2])
+        self.assertTrue(hoja["G5"].value.startswith("=SUMIF("))
+
     def test_solo_lectura_consulta_pero_no_abona(self):
         lector = crear_usuario_con_area("lector", AREA_TESORERIA, solo_lectura=True)
         self.client.force_authenticate(user=lector)
