@@ -40,7 +40,12 @@ BLOQUES = [
 ]
 # Valor del filtro ?presentacion= para los productos sin presentación.
 SIN_PRESENTACION = "sin"
-COLUMNAS = ["TALLA", "TIPO", "PROVEEDOR", "PESO MASTER", "MASTER", "KILOGRAMOS", "EXISTENCIA"]
+# Resumen de las cámaras de México (?camara=mexico): el mismo formato, con
+# todas ellas sumadas como si fueran una sola cámara.
+RESUMEN_MEXICO = "mexico"
+CAMARAS_MEXICO = ["FRIGARSA", "NAVECAP", "BASAL 4", "BASAL 7", "MEXIDELI", "ARCOSA"]
+NOMBRE_RESUMEN_MEXICO = "CÁMARAS DE MÉXICO"
+COLUMNAS = ["TALLA", "TIPO", "PROVEEDOR", "PESO MASTER", "MASTER", "KILOGRAMOS", "TOTAL TIPO", "EXISTENCIA"]
 
 
 def _clave_talla(talla):
@@ -68,7 +73,9 @@ def lotes_con_existencia(fecha, camara_id=None, empresa_id=None, filtros=None):
         .annotate(kilos_a_fecha=F("total_kilos") - F("kilos_salidos"))
         .filter(kilos_a_fecha__gt=0)
     )
-    if camara_id:
+    if camara_id == RESUMEN_MEXICO:
+        lotes = lotes.filter(camara__nombre__in=CAMARAS_MEXICO)
+    elif camara_id:
         lotes = lotes.filter(camara_id=camara_id)
     if empresa_id:
         lotes = lotes.filter(entrada__empresa_id=empresa_id)
@@ -90,7 +97,7 @@ def construir_reporte(fecha, camara_id=None, empresa_id=None, filtros=None):
     Estructura lista para pintar (JSON, PDF o Excel):
 
     [{camara, bloques: [{presentacion, etiqueta, tallas: [{talla, existencia,
-      tipos: [{tipo, filas: [{proveedor, peso_por_caja, cajas, kilos}]}]}],
+      tipos: [{tipo, total, filas: [{proveedor, peso_por_caja, cajas, kilos}]}]}],
       subtotal}], total}]
 
     Proveedores sin existencia no aparecen (decisión del área, "hasta nuevo
@@ -100,10 +107,12 @@ def construir_reporte(fecha, camara_id=None, empresa_id=None, filtros=None):
     arbol = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(
         lambda: defaultdict(lambda: [0, CERO])))))
     camaras = {}
+    resumen = camara_id == RESUMEN_MEXICO
     for lote in lotes_con_existencia(fecha, camara_id, empresa_id, filtros):
-        camaras[lote.camara_id] = lote.camara.nombre
+        clave = RESUMEN_MEXICO if resumen else lote.camara_id
+        camaras[clave] = NOMBRE_RESUMEN_MEXICO if resumen else lote.camara.nombre
         proveedor = lote.proveedor_origen.nombre if lote.proveedor_origen_id else "—"
-        celda = arbol[lote.camara_id][lote.producto.presentacion][lote.producto.talla][lote.producto.tipo][
+        celda = arbol[clave][lote.producto.presentacion][lote.producto.talla][lote.producto.tipo][
             (proveedor, lote.peso_por_caja)
         ]
         # Cajas completas de cada lote, igual que EntradaDetalle.cajas_disponibles.
@@ -125,8 +134,9 @@ def construir_reporte(fecha, camara_id=None, empresa_id=None, filtros=None):
                         {"proveedor": prov, "peso_por_caja": peso, "cajas": cajas, "kilos": kilos}
                         for (prov, peso), (cajas, kilos) in sorted(por_talla[talla][tipo].items())
                     ]
-                    tipos.append({"tipo": tipo, "filas": filas})
-                existencia = sum((f["kilos"] for t in tipos for f in t["filas"]), CERO)
+                    # Total del tipo dentro de la talla (p. ej. cuánto 20-30 marqueta hay).
+                    tipos.append({"tipo": tipo, "filas": filas, "total": sum((f["kilos"] for f in filas), CERO)})
+                existencia = sum((t["total"] for t in tipos), CERO)
                 tallas.append({"talla": talla, "existencia": existencia, "tipos": tipos})
             subtotal = sum((t["existencia"] for t in tallas), CERO)
             bloques.append({"presentacion": presentacion, "etiqueta": etiqueta, "tallas": tallas, "subtotal": subtotal})
@@ -171,6 +181,7 @@ def serializar_reporte(reporte):
                             "tipos": [
                                 {
                                     "tipo": tp["tipo"],
+                                    "total": num(tp["total"]),
                                     "filas": [
                                         {
                                             "proveedor": f["proveedor"],
@@ -214,7 +225,7 @@ def construir_pdf(reporte, fecha, subtitulo=""):
     def p(texto, alineacion=TA_LEFT, estilo_base=estilo):
         return Paragraph(str(texto), ParagraphStyle("x", parent=estilo_base, alignment=alineacion))
 
-    anchos = [2.6 * cm, 2.4 * cm, 4.2 * cm, 2.3 * cm, 2.2 * cm, 2.6 * cm, 2.6 * cm]
+    anchos = [2.2 * cm, 2.2 * cm, 3.9 * cm, 1.9 * cm, 1.8 * cm, 2.4 * cm, 2.4 * cm, 2.4 * cm]
     elementos = []
     if not reporte:
         elementos.append(Paragraph(f"No hay existencias al {fecha:%d/%m/%Y} con los filtros seleccionados.", estilo))
@@ -224,7 +235,7 @@ def construir_pdf(reporte, fecha, subtitulo=""):
             elementos.append(PageBreak())
         titulo = f"EXISTENCIAS {camara['camara']['nombre']}"
         filas = [
-            [p(titulo, TA_LEFT, negrita), "", p(subtitulo), "", "", p(f"{fecha:%d/%m/%Y}", TA_CENTER, negrita), ""],
+            [p(titulo, TA_LEFT, negrita), "", p(subtitulo), "", "", p(f"{fecha:%d/%m/%Y}", TA_CENTER, negrita), "", ""],
             [p(c, TA_CENTER, encabezado) for c in COLUMNAS],
         ]
         estilos = [
@@ -235,7 +246,7 @@ def construir_pdf(reporte, fecha, subtitulo=""):
         ]
         for bloque in camara["bloques"]:
             if len(camara["bloques"]) > 1:
-                filas.append([p(bloque["etiqueta"].upper(), TA_LEFT, negrita)] + [""] * 6)
+                filas.append([p(bloque["etiqueta"].upper(), TA_LEFT, negrita)] + [""] * 7)
                 estilos.append(("SPAN", (0, len(filas) - 1), (-1, len(filas) - 1)))
             for talla, span_t, tipo, span_tp, fila, prim_talla, prim_tipo in filas_planas(bloque):
                 r = len(filas)
@@ -246,14 +257,15 @@ def construir_pdf(reporte, fecha, subtitulo=""):
                     p(_peso(fila["peso_por_caja"]), TA_CENTER),
                     p(f"{fila['cajas']:,}", TA_RIGHT),
                     p(kg(fila['kilos']), TA_RIGHT),
+                    p(kg(tipo['total']), TA_RIGHT) if prim_tipo else "",
                     p(kg(talla['existencia']), TA_RIGHT) if prim_talla else "",
                 ])
                 if prim_talla and span_t > 1:
-                    estilos += [("SPAN", (0, r), (0, r + span_t - 1)), ("SPAN", (6, r), (6, r + span_t - 1))]
+                    estilos += [("SPAN", (0, r), (0, r + span_t - 1)), ("SPAN", (7, r), (7, r + span_t - 1))]
                 if prim_tipo and span_tp > 1:
-                    estilos.append(("SPAN", (1, r), (1, r + span_tp - 1)))
-            filas.append(["", "", "", "", p("SUBTOTAL", TA_CENTER, negrita), p(kg(bloque['subtotal']), TA_RIGHT, negrita), ""])
-        filas.append(["", "", "", "", p("TOTAL", TA_CENTER, negrita), p(kg(camara['total']), TA_RIGHT, negrita), ""])
+                    estilos += [("SPAN", (1, r), (1, r + span_tp - 1)), ("SPAN", (6, r), (6, r + span_tp - 1))]
+            filas.append(["", "", "", "", p("SUBTOTAL", TA_CENTER, negrita), p(kg(bloque['subtotal']), TA_RIGHT, negrita), "", ""])
+        filas.append(["", "", "", "", p("TOTAL", TA_CENTER, negrita), p(kg(camara['total']), TA_RIGHT, negrita), "", ""])
 
         tabla = Table(filas, colWidths=anchos, repeatRows=2)
         tabla.setStyle(TableStyle(estilos))
@@ -303,20 +315,23 @@ def construir_excel(reporte, fecha, subtitulo=""):
         for bloque in camara["bloques"]:
             if len(camara["bloques"]) > 1:
                 ws.cell(r, 1, bloque["etiqueta"].upper()).font = negrita
-                ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=7)
+                ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=8)
                 r += 1
             for talla, span_t, tipo, span_tp, fila, prim_talla, prim_tipo in filas_planas(bloque):
                 if prim_talla:
                     ws.cell(r, 1, talla["talla"]).alignment = centro
-                    ws.cell(r, 7, float(talla["existencia"])).number_format = FORMATO_KG
-                    ws.cell(r, 7).alignment = Alignment(vertical="center")
+                    ws.cell(r, 8, float(talla["existencia"])).number_format = FORMATO_KG
+                    ws.cell(r, 8).alignment = Alignment(vertical="center")
                     if span_t > 1:
                         ws.merge_cells(start_row=r, start_column=1, end_row=r + span_t - 1, end_column=1)
-                        ws.merge_cells(start_row=r, start_column=7, end_row=r + span_t - 1, end_column=7)
+                        ws.merge_cells(start_row=r, start_column=8, end_row=r + span_t - 1, end_column=8)
                 if prim_tipo:
                     ws.cell(r, 2, tipo["tipo"]).alignment = centro
+                    ws.cell(r, 7, float(tipo["total"])).number_format = FORMATO_KG
+                    ws.cell(r, 7).alignment = Alignment(vertical="center")
                     if span_tp > 1:
                         ws.merge_cells(start_row=r, start_column=2, end_row=r + span_tp - 1, end_column=2)
+                        ws.merge_cells(start_row=r, start_column=7, end_row=r + span_tp - 1, end_column=7)
                 ws.cell(r, 3, fila["proveedor"])
                 ws.cell(r, 4, float(fila["peso_por_caja"])).alignment = centro
                 ws.cell(r, 5, fila["cajas"]).number_format = "#,##0"
@@ -330,10 +345,10 @@ def construir_excel(reporte, fecha, subtitulo=""):
         ws.cell(r, 6, float(camara["total"])).number_format = FORMATO_KG
         ws.cell(r, 6).font = negrita
 
-        for fila_celdas in ws.iter_rows(min_row=1, max_row=r, max_col=7):
+        for fila_celdas in ws.iter_rows(min_row=1, max_row=r, max_col=8):
             for celda in fila_celdas:
                 celda.border = borde
-        for col, ancho in enumerate([12, 12, 26, 13, 11, 15, 15], start=1):
+        for col, ancho in enumerate([12, 12, 26, 13, 11, 15, 15, 15], start=1):
             ws.column_dimensions[get_column_letter(col)].width = ancho
         ws.freeze_panes = "A3"
         ws.print_title_rows = "1:2"
