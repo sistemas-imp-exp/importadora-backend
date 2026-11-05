@@ -110,11 +110,13 @@ class PagoCliente(MovimientoCarteraBase):
     EFECTIVO = 'E'
     EFECTIVO_TESORERIA = 'A'
     EFECTIVO_SUCURSAL = 'AA'
+    DESCUENTO_NOMINA = 'N'
     TIPO_CHOICES = (
         (TRANSFERENCIA, 'Transferencia'),
         (EFECTIVO, 'Efectivo'),
         (EFECTIVO_TESORERIA, 'Efectivo a Tesorería'),
         (EFECTIVO_SUCURSAL, 'Efectivo Arriaga / Mapastepec'),
+        (DESCUENTO_NOMINA, 'Descuento de nómina'),
     )
 
     cliente = models.ForeignKey(Cliente, on_delete=models.PROTECT, related_name='+', null=True, blank=True)
