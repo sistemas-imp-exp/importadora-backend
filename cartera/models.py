@@ -22,6 +22,9 @@ class ClienteCartera(models.Model):
     """Datos de cobranza del cliente (el catálogo es el de Inventario)."""
     cliente = models.OneToOneField(Cliente, on_delete=models.CASCADE, primary_key=True, related_name='cartera')
     celular = models.CharField(max_length=120, blank=True)
+    # Encabezado del estado de cuenta; opcionales.
+    domicilio = models.CharField(max_length=255, blank=True)
+    rfc = models.CharField('RFC', max_length=13, blank=True)
     pagare = models.BooleanField(default=False, help_text='El cliente firmó pagaré.')
     notas = models.TextField(blank=True)
     # Último pago según el Excel del área al arrancar; los pagos capturados
@@ -107,11 +110,13 @@ class PagoCliente(MovimientoCarteraBase):
     EFECTIVO = 'E'
     EFECTIVO_TESORERIA = 'A'
     EFECTIVO_SUCURSAL = 'AA'
+    DESCUENTO_NOMINA = 'N'
     TIPO_CHOICES = (
         (TRANSFERENCIA, 'Transferencia'),
         (EFECTIVO, 'Efectivo'),
         (EFECTIVO_TESORERIA, 'Efectivo a Tesorería'),
         (EFECTIVO_SUCURSAL, 'Efectivo Arriaga / Mapastepec'),
+        (DESCUENTO_NOMINA, 'Descuento de nómina'),
     )
 
     cliente = models.ForeignKey(Cliente, on_delete=models.PROTECT, related_name='+', null=True, blank=True)
@@ -144,6 +149,32 @@ class PagoCliente(MovimientoCarteraBase):
     @property
     def por_identificar(self):
         return self.cliente_id is None
+
+
+class AplicacionPago(models.Model):
+    """
+    Parte de un pago que Cartera descuenta de una nota (venta) del cliente en
+    la empresa del pago; sin salida = del saldo al corte. Lo no aplicado del
+    pago, los abonos y el saldo a favor se descuentan de lo más antiguo (ver
+    cartera/antiguedad.py). Validado en PagoClienteSerializer._preparar_aplicaciones.
+    Si Inventario borra la salida, su aplicación se va con ella (el pago vuelve
+    a lo más antiguo).
+    """
+    pago = models.ForeignKey(PagoCliente, on_delete=models.CASCADE, related_name='aplicaciones')
+    salida = models.ForeignKey(
+        'inventario.Salida', on_delete=models.CASCADE, null=True, blank=True, related_name='aplicaciones_cartera',
+    )
+    monto = models.DecimalField(max_digits=18, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+
+    class Meta:
+        ordering = ['id']
+        constraints = [
+            models.UniqueConstraint(fields=['pago', 'salida'], name='aplicacion_pago_nota_unica'),
+            models.UniqueConstraint(fields=['pago'], condition=Q(salida__isnull=True), name='aplicacion_pago_corte_unica'),
+        ]
+
+    def __str__(self):
+        return f"{self.pago_id} → {self.salida_id or 'saldo al corte'}: {self.monto}"
 
 
 class AjusteCliente(MovimientoCarteraBase):

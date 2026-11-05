@@ -3,10 +3,12 @@ from rest_framework.routers import DefaultRouter
 
 from .api_views import (
     AjusteClienteViewSet,
+    AntiguedadSaldosView,
     ClienteCarteraViewSet,
     EmpresaCarteraViewSet,
     IngresosTesoreriaView,
     PagoClienteViewSet,
+    ControlMensualView,
     ReporteSaldosView,
     ResumenCarteraView,
     SaldoInicialViewSet,
@@ -28,6 +30,10 @@ urlpatterns = [
     path('reportes/saldos/', ReporteSaldosView.as_view()),
     path('reportes/saldos/pdf/', ReporteSaldosView.as_view(formato='pdf')),
     path('reportes/saldos/excel/', ReporteSaldosView.as_view(formato='excel')),
+    path('reportes/antiguedad/', AntiguedadSaldosView.as_view()),
+    path('reportes/antiguedad/excel/', AntiguedadSaldosView.as_view(formato='excel')),
+    path('reportes/control-mensual/', ControlMensualView.as_view()),
+    path('reportes/control-mensual/excel/', ControlMensualView.as_view(formato='excel')),
     path('utilidad/', UtilidadRealView.as_view()),
     path('utilidad/excel/', UtilidadRealView.as_view(formato='excel')),
     path('utilidad/costos/', CostosVentaView.as_view()),

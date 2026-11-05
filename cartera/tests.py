@@ -343,6 +343,9 @@ class VentasTests(BaseCartera):
                           ("SAL-3", "N-SAL-3", "IMPORTADORA", "0")])
         self.assertEqual([l["estado"] for l in ventas[0]["lineas"]], ["pendiente", "pendiente"])
         self.assertEqual(ventas[2]["lineas"][0]["estado"], "sin_precio")
+        # Proveedor y factura del lote para rastrear la venta.
+        self.assertEqual(ventas[0]["lineas"][0]["proveedor"], "SAN LORENZO")
+        self.assertIn("factura", ventas[0]["lineas"][0])
 
     def test_verificar_y_reportar_diferencia(self):
         self.assertEqual(self._verificar([self.l1, self.l2], "verificada").status_code, 200)
@@ -523,9 +526,26 @@ class UtilidadRealTests(BaseCartera):
         self.client.post(f"{self.URL}gastos-operativos/", {"por_kilo": "5", "vigente_desde": HOY.isoformat()}, format="json")
         self.assertEqual(self._utilidad()["resumen"]["gasto_operativo"], "655.00")
 
+    def test_separada_por_empresa(self):
+        datos = self._utilidad()
+        self.assertEqual({f["empresa"]["nombre"] for f in datos["filas"]}, {"IMPORTADORA", "MARISCOS SELECTOS"})
+        por_empresa = {e["empresa"]["nombre"]: e["resumen"] for e in datos["empresas"]}
+        self.assertEqual(sorted(por_empresa), ["IMPORTADORA", "MARISCOS SELECTOS"])
+        # Las partes suman el total.
+        self.assertEqual(sum(Decimal(r["venta"]) for r in por_empresa.values()), Decimal(datos["resumen"]["venta"]))
+        solo = self._utilidad(empresa=self.sel.id)
+        self.assertEqual({f["empresa"]["nombre"] for f in solo["filas"]}, {"MARISCOS SELECTOS"})
+        self.assertEqual(solo["resumen"]["venta"], por_empresa["MARISCOS SELECTOS"]["venta"])
+        libro = load_workbook(BytesIO(self.client.get(f"{self.URL}excel/", {
+            "desde": (CORTE + timedelta(days=1)).isoformat(), "empresa": self.sel.id}).content))
+        self.assertEqual(libro.sheetnames, ["Registro MARISCOS SELECTOS"])
+
     def test_excel_como_la_hoja_registro_y_permisos(self):
         respuesta = self.client.get(f"{self.URL}excel/", {"desde": (CORTE + timedelta(days=1)).isoformat()})
-        hoja = load_workbook(BytesIO(respuesta.content))["Registro"]
+        libro = load_workbook(BytesIO(respuesta.content))
+        # Una hoja por empresa.
+        self.assertEqual(libro.sheetnames, ["Registro IMPORTADORA", "Registro MARISCOS SELECTOS"])
+        hoja = libro["Registro IMPORTADORA"]
         self.assertEqual([c.value for c in hoja[1]][:4], ["Fecha", "LOTE", "Nota", "PROVEEDOR"])
         self.assertTrue(any(f[5] == "Utilidad real" for f in hoja.iter_rows(values_only=True)))
         self.assertEqual(self.client.post(f"{self.URL}costos/", {"costos": [{"linea_id": 999999, "costo_unitario": "1"}]},
@@ -553,3 +573,135 @@ class ReportePagosTests(BaseCartera):
         # Solo activos: el cancelado ya no sale.
         hoja = load_workbook(BytesIO(self.client.get("/api/cartera/pagos/excel/", {**params, "estado": "activo"}).content)).active
         self.assertEqual(sum(1 for f in hoja.iter_rows(values_only=True) if f[1] == "CABEZA DE TORO"), 1)
+
+
+class DatosClienteYArchivosTests(BaseCartera):
+    """Domicilio y RFC del cliente en el encabezado del estado de cuenta; depósitos por identificar en Pagos."""
+
+    def test_domicilio_y_rfc_opcionales_y_en_el_estado_de_cuenta(self):
+        url = f"/api/cartera/clientes/{self.cliente.id}/"
+        datos = {"nombre": "CABEZA DE TORO", "activo": True, "celular": "961 123 4567",
+                 "domicilio": " Av.  Central 10,  Tapachula ", "rfc": "cdt 850101 ab1"}
+        r = self.client.put(url, datos, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual((r.data["domicilio"], r.data["rfc"]), ("Av. Central 10, Tapachula", "CDT850101AB1"))
+        self.assertEqual(self.client.put(url, {**datos, "rfc": "XYZ"}, format="json").status_code, 400)
+        # Vacíos se aceptan.
+        self.assertEqual(self.client.put(url, {**datos, "rfc": "", "domicilio": ""}, format="json").status_code, 200)
+        self.client.put(url, datos, format="json")
+
+        respuesta = self.client.get(f"{url}estado-cuenta/excel/", {"empresa": self.imp.id})
+        filas = list(load_workbook(BytesIO(respuesta.content)).active.iter_rows(values_only=True))
+        encabezado = {f[0]: f[1] for f in filas[1:7]}
+        self.assertEqual(encabezado["Domicilio"], "Av. Central 10, Tapachula")
+        self.assertEqual(encabezado["RFC"], "CDT850101AB1")
+        self.assertEqual(encabezado["Teléfono"], "961 123 4567")
+        self.assertEqual(encabezado["Empresa"], "IMPORTADORA")
+        self.assertIn("Nota", [f[0] for f in filas])
+        self.assertEqual(self.client.get(f"{url}estado-cuenta/pdf/").status_code, 200)
+
+    def test_estado_de_cuenta_sin_filtro_va_separado_por_empresa(self):
+        self._pago("300")
+        url = f"/api/cartera/clientes/{self.cliente.id}/estado-cuenta/"
+        libro = load_workbook(BytesIO(self.client.get(f"{url}excel/").content))
+        self.assertEqual(libro.sheetnames, ["IMPORTADORA", "MARISCOS SELECTOS"])
+        # Cada hoja con su empresa en el encabezado y su propio saldo corrido.
+        for nombre, saldo in (("IMPORTADORA", 700), ("MARISCOS SELECTOS", -200)):
+            filas = list(libro[nombre].iter_rows(values_only=True))
+            self.assertEqual({f[0]: f[1] for f in filas[1:7]}["Empresa"], nombre)
+            self.assertEqual([f for f in filas if f and isinstance(f[10], (int, float))][-1][10], saldo)
+        libro = load_workbook(BytesIO(self.client.get(f"{url}excel/", {"empresa": self.sel.id}).content))
+        self.assertEqual(libro.sheetnames, ["MARISCOS SELECTOS"])
+        self.assertEqual(self.client.get(f"{url}pdf/").status_code, 200)
+
+    def test_domicilio_con_signo_igual_queda_como_texto_en_excel(self):
+        datos = {"nombre": "CABEZA DE TORO", "activo": True, "domicilio": "=1+1"}
+        self.client.put(f"/api/cartera/clientes/{self.cliente.id}/", datos, format="json")
+        hoja = load_workbook(BytesIO(self.client.get(
+            f"/api/cartera/clientes/{self.cliente.id}/estado-cuenta/excel/", {"empresa": self.imp.id}).content)).active
+        celda = next(f[1] for f in hoja.iter_rows(min_row=2, max_row=7) if f[0].value == "Domicilio")
+        self.assertEqual((celda.value, celda.data_type), ("=1+1", "s"))
+
+    def test_archivos_de_pagos_identificados_agregan_los_por_identificar(self):
+        self._pago("300")
+        self._pago("5000", cliente_id=None)
+        cancelado = self._pago("70", cliente_id=None).data
+        self.client.post(f"/api/cartera/pagos/{cancelado['id']}/cancelar/", {"motivo": "x"}, format="json")
+
+        libro = load_workbook(BytesIO(self.client.get("/api/cartera/pagos/excel/", {"por_identificar": "false"}).content))
+        self.assertEqual(libro.sheetnames, ["Pagos de clientes", "Por identificar"])
+        montos = [f[4] for f in libro["Por identificar"].iter_rows(min_row=2, values_only=True) if f[1] == "POR IDENTIFICAR"]
+        self.assertEqual(montos, [5000])  # solo activos
+        # Sin filtro ya vienen en la lista: no se repiten en otra hoja.
+        libro = load_workbook(BytesIO(self.client.get("/api/cartera/pagos/excel/").content))
+        self.assertEqual(libro.sheetnames, ["Pagos de clientes"])
+        self.assertEqual(self.client.get("/api/cartera/pagos/pdf/", {"por_identificar": "false"}).status_code, 200)
+
+
+class ControlMensualTests(BaseCartera):
+    """Control del mes por empresa (hojas "<EMPRESA> <MES> <AÑO>" de CARTERA.xlsx), con fechas fijas."""
+
+    URL = "/api/cartera/reportes/control-mensual/"
+
+    def setUp(self):
+        super().setUp()
+        from datetime import date
+        from inventario.models import Camara, Entrada, EntradaDetalle, Producto, Salida, SalidaDetalle
+        self.date = date
+        SaldoInicialCliente.objects.update(fecha=date(2026, 9, 30))
+        camara = Camara.objects.create(nombre="REMAINS", tipo=Camara.TIPO_PROPIA)
+        producto = Producto.objects.create(talla="41-50", tipo="FREEZADO")
+        entrada = Entrada.objects.create(fecha=date(2026, 9, 30), empresa=self.imp)
+        lote = EntradaDetalle.objects.create(
+            entrada=entrada, producto=producto, lote_proveedor="L", camara=camara, cajas=50,
+            peso_por_caja=Decimal("20"), total_kilos=Decimal("1000"), costo_por_kilo=Decimal("90"),
+        )
+
+        def vender(fecha, kilos, nota):
+            s = Salida.objects.create(folio_de_salida=f"S-{nota}", cliente=self.cliente, fecha=fecha, notas=nota)
+            SalidaDetalle.objects.create(salida=s, producto=producto, entrada_detalle=lote, camara=camara, cajas=1,
+                                         total_kilos=Decimal(kilos), precio_x_kilo=Decimal("100"))
+
+        vender(date(2026, 10, 5), "10", "2001/26A")   # octubre: 1,000
+        vender(date(2026, 10, 20), "5", "2002/26A")   # octubre: 500
+        vender(date(2026, 11, 2), "1", "2003/26A")    # noviembre: 100
+        for fecha, monto, empresa in ((date(2026, 10, 7), "300", self.imp), (date(2026, 11, 3), "50", self.imp),
+                                      (date(2026, 10, 8), "40", self.sel)):
+            PagoCliente.objects.create(cliente=self.cliente, empresa=empresa, fecha=fecha, monto=Decimal(monto),
+                                       tipo=PagoCliente.TRANSFERENCIA, usuario=self.usuario)
+        AjusteCliente.objects.create(cliente=self.cliente, empresa=self.sel, fecha=date(2026, 10, 9), monto=Decimal("15"),
+                                     naturaleza=AjusteCliente.CARGO, concepto="Cargo", usuario=self.usuario)
+
+    def test_saldos_del_mes_por_empresa_cuadran_con_el_estado_de_cuenta(self):
+        datos = self.client.get(self.URL, {"mes": "2026-10"}).data
+        empresas = {e["empresa"]["nombre"]: e for e in datos["empresas"]}
+        imp = empresas["IMPORTADORA"]["filas"][0]
+        self.assertEqual((imp["anterior"], imp["ventas"], imp["pagos"], imp["ajustes"], imp["actual"]),
+                         ("1000.00", "1500.00", "300.00", "0.00", "2200.00"))
+        sel = empresas["MARISCOS SELECTOS"]["filas"][0]
+        self.assertEqual((sel["anterior"], sel["pagos"], sel["ajustes"], sel["actual"]), ("-200.00", "40.00", "15.00", "-225.00"))
+        # El saldo actual es el del estado de cuenta al último día del mes.
+        saldos = saldos_por_cliente([self.cliente.id], hasta=self.date(2026, 10, 31))[self.cliente.id]
+        self.assertEqual((Decimal(imp["actual"]), Decimal(sel["actual"])), (saldos[self.imp.id], saldos[self.sel.id]))
+        self.assertEqual([(v["nota"], v["cantidad"]) for v in empresas["IMPORTADORA"]["ventas"]],
+                         [("2001/26A", "1000.00"), ("2002/26A", "500.00")])
+        self.assertEqual([(p["tipo"], p["cantidad"]) for p in empresas["IMPORTADORA"]["pagos"]], [("T", "300.00")])
+        # Noviembre arranca del cierre de octubre.
+        nov = {e["empresa"]["nombre"]: e for e in self.client.get(self.URL, {"mes": "2026-11"}).data["empresas"]}
+        self.assertEqual(nov["IMPORTADORA"]["filas"][0]["anterior"], "2200.00")
+        self.assertEqual(nov["IMPORTADORA"]["filas"][0]["actual"], "2250.00")
+
+    def test_excel_una_hoja_por_empresa_como_el_control(self):
+        libro = load_workbook(BytesIO(self.client.get(f"{self.URL}excel/", {"mes": "2026-10"}).content))
+        self.assertEqual(libro.sheetnames, ["IMPORTADORA OCTUBRE 2026", "SELECTOS OCTUBRE 2026"])
+        hoja = libro["IMPORTADORA OCTUBRE 2026"]
+        self.assertEqual([hoja.cell(2, c).value for c in range(1, 7)],
+                         ["DESCRIPCIÓN", "SALDO AL 30/09/2026", "VENTAS", "PAGOS", "AJUSTES", "SALDO ACTUAL"])
+        self.assertEqual((hoja["A3"].value, hoja["B3"].value, hoja["F3"].value), ("CABEZA DE TORO", 1000, "=B3+C3-D3+E3"))
+        self.assertEqual(hoja["A4"].value, "TOTALES")
+        self.assertEqual((hoja["H2"].value, hoja["M2"].value, hoja["M3"].value), ("TIPO", "NOTA", "2001/26A"))
+
+    def test_mes_invalido_o_anterior_al_corte(self):
+        self.assertEqual(self.client.get(self.URL, {"mes": "2026-09"}).status_code, 400)
+        self.assertEqual(self.client.get(self.URL, {"mes": "2026-13"}).status_code, 400)
+        self.assertEqual(self.client.get(self.URL, {"mes": "octubre"}).status_code, 400)

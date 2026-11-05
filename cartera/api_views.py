@@ -181,24 +181,62 @@ class ClienteCarteraViewSet(
             lineas = [linea for linea in lineas if estado(linea)[0] == filtro_estado]
         return Response(ventas_agrupadas(lineas))
 
-    @action(detail=True, methods=['get'], url_path='estado-cuenta/pdf')
-    def estado_cuenta_pdf(self, request, pk=None):
+    @action(detail=True, methods=['get'], url_path='notas-pendientes')
+    def notas_pendientes(self, request, pk=None):
+        """
+        Notas a las que se puede aplicar un pago en ?empresa= (saldo al corte y
+        ventas), con lo pendiente a hoy y lo que aún admite. ?pago= excluye al
+        pago que se está editando; ?fecha= deja fuera las notas posteriores.
+        """
+        from .antiguedad import notas_pendientes
         cliente = self.get_object()
+        empresa = self._empresa_filtro()
+        if empresa is None:
+            raise DRFValidationError({'empresa': 'Indica la empresa.'})
+        pago = request.query_params.get('pago')
+        excluir = int(pago) if (pago or '').isdigit() else None
+        fecha = parse_date(request.query_params.get('fecha') or '')
+        notas = notas_pendientes(cliente.id, empresa.id, hasta=fecha, excluir_pago=excluir)
+        hoy = timezone.localdate()
+        return Response([
+            {
+                'salida_id': n.salida_id, 'tipo': n.tipo, 'nota': n.nota, 'folio': n.folio,
+                'fecha': n.fecha.isoformat(), 'dias': (hoy - n.fecha).days,
+                'importe': _dinero(n.importe), 'pendiente': _dinero(n.pendiente),
+                # Lo que admite: el importe menos lo aplicado a mano por otros pagos.
+                'disponible': _dinero(n.importe - n.aplicado),
+            }
+            for n in notas
+        ])
+
+    def _secciones_estado_cuenta(self, cliente):
+        """
+        [(empresa, renglones, saldo)]: la empresa filtrada o, sin filtro, una
+        por empresa con movimientos (cada una con su propio saldo corrido), y
+        el saldo conjunto si son varias.
+        """
         empresa = self._empresa_filtro()
         saldos = saldos_por_cliente(clientes=[cliente.id])[cliente.id]
         empresas = [empresa] if empresa else list(Empresa.objects.order_by('nombre'))
-        resumen = [(e.nombre, saldos[e.id]) for e in empresas]
+        secciones = [(e, estado_de_cuenta(cliente, e), saldos[e.id]) for e in empresas]
         if not empresa:
-            resumen.append(('Conjunto', sum(saldos[e.id] for e in empresas)))
-        buffer = construir_pdf_estado_cuenta(
-            cliente, getattr(cliente, 'cartera', None), estado_de_cuenta(cliente, empresa), resumen, empresa,
-        )
+            con_movimientos = [s for s in secciones if s[1]]
+            secciones = con_movimientos or secciones[:1]
+        conjunto = sum(saldos[e.id] for e in empresas) if len(secciones) > 1 else None
+        return secciones, conjunto
+
+    @action(detail=True, methods=['get'], url_path='estado-cuenta/pdf')
+    def estado_cuenta_pdf(self, request, pk=None):
+        cliente = self.get_object()
+        secciones, conjunto = self._secciones_estado_cuenta(cliente)
+        buffer = construir_pdf_estado_cuenta(cliente, getattr(cliente, 'cartera', None), secciones, conjunto)
         return _descarga(buffer.getvalue(), 'application/pdf', f'estado_cuenta_cliente_{cliente.id}.pdf')
 
     @action(detail=True, methods=['get'], url_path='estado-cuenta/excel')
     def estado_cuenta_excel(self, request, pk=None):
         cliente = self.get_object()
-        libro = construir_excel_estado_cuenta(cliente, estado_de_cuenta(cliente, self._empresa_filtro()))
+        secciones, _ = self._secciones_estado_cuenta(cliente)
+        libro = construir_excel_estado_cuenta(cliente, getattr(cliente, 'cartera', None), secciones)
         return _excel(libro, f'estado_cuenta_cliente_{cliente.id}.xlsx')
 
 
@@ -256,7 +294,7 @@ class PagoClienteViewSet(MovimientoCarteraViewSet):
     serializer_class = PagoClienteSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset().select_related('ingreso_tesoreria')
+        queryset = super().get_queryset().select_related('ingreso_tesoreria').prefetch_related('aplicaciones__salida')
         tipo = self.request.query_params.get('tipo')
         if tipo:
             queryset = queryset.filter(tipo=tipo)
@@ -291,16 +329,35 @@ class PagoClienteViewSet(MovimientoCarteraViewSet):
             textos.append(f"Búsqueda: {params['q'].strip()}")
         return textos
 
+    def _por_identificar(self):
+        """
+        Con ?por_identificar=0 (pestaña de pagos identificados) los archivos
+        agregan aparte los depósitos aún sin cliente, activos y de la empresa
+        filtrada; sin ese filtro ya vienen en la lista.
+        """
+        valor = self.request.query_params.get('por_identificar')
+        if valor is None or _verdadero(valor):
+            return None
+        pendientes = PagoCliente.objects.select_related('empresa', 'usuario').prefetch_related('aplicaciones').filter(
+            cliente__isnull=True, cancelado=False,
+        )
+        if self.request.query_params.get('empresa'):
+            pendientes = pendientes.filter(empresa_id=self.request.query_params['empresa'])
+        return list(pendientes.order_by('-fecha', '-creado'))
+
     @action(detail=False, methods=['get'])
     def pdf(self, request):
-        """Los pagos de la pantalla (mismos filtros) en PDF."""
-        contenido = construir_pdf_pagos(list(self.get_queryset()), self._filtros_texto()).getvalue()
+        """Los pagos de la pantalla (mismos filtros) en PDF, y los depósitos por identificar."""
+        contenido = construir_pdf_pagos(
+            list(self.get_queryset()), self._filtros_texto(), self._por_identificar(),
+        ).getvalue()
         return _descarga(contenido, 'application/pdf', 'pagos_clientes.pdf')
 
     @action(detail=False, methods=['get'])
     def excel(self, request):
-        """Los pagos de la pantalla (mismos filtros) en Excel."""
-        return _excel(construir_excel_pagos(list(self.get_queryset()), self._filtros_texto()), 'pagos_clientes.xlsx')
+        """Los pagos de la pantalla (mismos filtros) en Excel, y los depósitos por identificar en otra hoja."""
+        libro = construir_excel_pagos(list(self.get_queryset()), self._filtros_texto(), self._por_identificar())
+        return _excel(libro, 'pagos_clientes.xlsx')
 
     @action(detail=True, methods=['post'])
     def identificar(self, request, pk=None):
@@ -512,3 +569,63 @@ class ReporteSaldosView(APIView):
                 for f in filas
             ],
         })
+
+
+class AntiguedadSaldosView(APIView):
+    """
+    Antigüedad de saldos por nota como "Cobro a clientes 2026" del área:
+    ?fecha= (por omisión hoy), ?empresa=, ?cliente=. JSON o Excel.
+    """
+    permission_classes = [AreaCartera]
+    formato = None
+
+    def get(self, request):
+        from .antiguedad import construir_excel, reporte, serializar
+        params = request.query_params
+        fecha = parse_date(params.get('fecha') or '') if params.get('fecha') else timezone.localdate()
+        if fecha is None:
+            raise DRFValidationError({'fecha': 'Fecha inválida.'})
+        if fecha > timezone.localdate():
+            raise DRFValidationError({'fecha': 'La fecha no puede ser futura.'})
+        corte = fecha_corte()
+        if corte and fecha < corte:
+            raise DRFValidationError({'fecha': f'La cartera arranca al {corte:%d/%m/%Y}.'})
+        empresa = params.get('empresa')
+        cliente = params.get('cliente')
+        datos = reporte(
+            fecha,
+            clientes=[int(cliente)] if (cliente or '').isdigit() else None,
+            empresa_id=int(empresa) if (empresa or '').isdigit() else None,
+        )
+        if self.formato == 'excel':
+            return _excel(construir_excel(datos), f'antiguedad_saldos_{fecha:%Y_%m_%d}.xlsx')
+        return Response(serializar(datos))
+
+
+class ControlMensualView(APIView):
+    """
+    Control del mes por empresa como las hojas "<EMPRESA> <MES> <AÑO>" del área:
+    ?mes=AAAA-MM (por omisión el mes en curso). JSON o Excel (una hoja por empresa).
+    """
+    permission_classes = [AreaCartera]
+    formato = None
+
+    def get(self, request):
+        from .control_mensual import MesInvalido, construir_excel, control_mensual, serializar
+        texto = (request.query_params.get('mes') or timezone.localdate().strftime('%Y-%m')).strip()
+        try:
+            anio, mes = (int(x) for x in texto.split('-'))
+            if not 1 <= mes <= 12:
+                raise ValueError
+            control = control_mensual(anio, mes)
+        except MesInvalido as error:
+            raise DRFValidationError({'mes': str(error)})
+        except ValueError:
+            raise DRFValidationError({'mes': 'Mes inválido, usa AAAA-MM.'})
+        if self.formato == 'excel':
+            return _descarga(
+                construir_excel(control, anio, mes).getvalue(),
+                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                f'control_cartera_{anio}_{mes:02d}.xlsx',
+            )
+        return Response(serializar(control, anio, mes))

@@ -1,7 +1,9 @@
 """Resguardos: venta por producto que el cliente deja guardada y retiros desde Inventario o Cartera."""
+from io import BytesIO
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from openpyxl import load_workbook
 from rest_framework.test import APITestCase
 
 from notificaciones.models import CanalArea, Notificacion
@@ -274,3 +276,48 @@ class ResguardoTests(APITestCase):
         respuesta = self._retirar(venta)
         self.assertEqual(respuesta.status_code, 403)
         self.assertIn("solo lectura", respuesta.data["detail"])
+
+    def test_resumen_como_la_hoja_resumen_resg(self):
+        venta = self._vender(nota="3616/26C", kilos="1000", cajas=50)
+        self.client.force_authenticate(user=self.cobranza)
+        self.assertEqual(self._retirar(venta, kilos="200", lote=self.lote_b).status_code, 201)
+        otra = self._vender(nota="3700/26C", kilos="500", cajas=25)
+        # Entregada completa: ya no aparece.
+        self.client.force_authenticate(user=self.cobranza)
+        self._retirar(otra, kilos="500", cajas=25, lote=self.lote_a, folio="SI6005")
+
+        datos = self.client.get(f"{URL}resumen/").data
+        self.assertEqual(len(datos["clientes"]), 1)
+        bloque = datos["clientes"][0]
+        self.assertEqual(bloque["cliente"]["nombre"], "HERAY ACERO MORENO")
+        self.assertEqual([(f["nota"], f["talla"], f["proveedor"], f["kilos"], f["precio"], f["total"]) for f in bloque["filas"]],
+                         [("3616/26C", "60-70 FREEZADO", "CAMANICA", "800.000", "150.0000", "120000.00")])
+        self.assertEqual((bloque["kilos"], bloque["total"], datos["total"]), ("800.000", "120000.00", "120000.00"))
+
+        hoja = load_workbook(BytesIO(self.client.get(f"{URL}resumen/excel/").content))["RESUMEN RESG."]
+        self.assertEqual(hoja["B3"].value, "RESGUARDO HERAY ACERO MORENO")
+        self.assertEqual([hoja.cell(4, c).value for c in range(2, 9)], ["FECHA", "NOTA", "TALLA", "PROVEEDOR", "KILOS", "PRECIO", "TOTAL"])
+        self.assertEqual((hoja["C5"].value, hoja["F5"].value, hoja["H5"].value), ("3616/26C", 800, "=F5*G5"))
+        self.assertEqual(hoja["F7"].value, "=SUM(F5:F5)")
+        respuesta = self.client.get(f"{URL}resumen/pdf/")
+        self.assertEqual((respuesta.status_code, respuesta["Content-Type"]), (200, "application/pdf"))
+        # Filtro por cliente y permisos de las dos áreas.
+        self.assertEqual(self.client.get(f"{URL}resumen/", {"cliente": 999999}).data["clientes"], [])
+        self.client.force_authenticate(user=crear_usuario_con_area("caja2", AREA_TESORERIA))
+        self.assertEqual(self.client.get(f"{URL}resumen/").status_code, 403)
+
+    def test_resumen_toma_el_proveedor_de_la_nota_de_la_carga_inicial(self):
+        from .resguardos_resumen import _proveedor_y_observacion
+        linea = type("Linea", (), {"notas": "Proveedor según control de resguardos: PAZ PREMIUN"})()
+        self.assertEqual(_proveedor_y_observacion(linea, []), ("PAZ PREMIUN", ""))
+        # Con entregas manda el lote real; la nota de la carga no se repite como observación.
+        self.assertEqual(_proveedor_y_observacion(linea, ["CAMANICA", "COEXMAR"]), ("CAMANICA / COEXMAR", ""))
+        linea.notas = "Se lleva el lunes"
+        self.assertEqual(_proveedor_y_observacion(linea, []), ("", "Se lleva el lunes"))
+
+    def test_resumen_excel_no_convierte_texto_en_formula(self):
+        self._vender(nota="=HYPERLINK(\"http://x\")", kilos="100", cajas=5)
+        self.client.force_authenticate(user=self.cobranza)
+        hoja = load_workbook(BytesIO(self.client.get(f"{URL}resumen/excel/").content))["RESUMEN RESG."]
+        celda = hoja["C5"]
+        self.assertEqual((celda.value.upper(), celda.data_type), ('=HYPERLINK("HTTP://X")', "s"))

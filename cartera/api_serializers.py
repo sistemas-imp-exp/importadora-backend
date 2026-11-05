@@ -1,14 +1,17 @@
+import re
 from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 from rest_framework import serializers
 
 from inventario.models import Cliente, Empresa
 from treasury.models import MovimientoTesoreria
 
-from .models import AjusteCliente, ClienteCartera, PagoCliente, SaldoInicialCliente, VerificacionVenta
+from .antiguedad import notas_pendientes
+from .models import AjusteCliente, AplicacionPago, ClienteCartera, PagoCliente, SaldoInicialCliente, VerificacionVenta
 from .saldos import fecha_corte
 from .ventas import empresa_de, estado, importe, producto_de
 
@@ -40,12 +43,15 @@ class EmpresaSerializer(serializers.ModelSerializer):
 class ClienteCarteraSerializer(serializers.ModelSerializer):
     """Cliente (catálogo de Inventario) con sus datos de cobranza."""
     celular = serializers.CharField(source='cartera.celular', required=False, allow_blank=True, max_length=120)
+    domicilio = serializers.CharField(source='cartera.domicilio', required=False, allow_blank=True, max_length=255)
+    # Sin max_length: el usuario puede escribirlo con espacios; validate_rfc lo limpia y valida.
+    rfc = serializers.CharField(source='cartera.rfc', required=False, allow_blank=True)
     pagare = serializers.BooleanField(source='cartera.pagare', required=False)
     notas = serializers.CharField(source='cartera.notas', required=False, allow_blank=True)
 
     class Meta:
         model = Cliente
-        fields = ['id', 'nombre', 'activo', 'celular', 'pagare', 'notas']
+        fields = ['id', 'nombre', 'activo', 'celular', 'domicilio', 'rfc', 'pagare', 'notas']
 
     def validate_nombre(self, value):
         value = _texto(value).upper()
@@ -58,6 +64,13 @@ class ClienteCarteraSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('Ya existe un cliente con ese nombre.')
         return value
 
+    def validate_rfc(self, value):
+        value = _texto(value).upper().replace(' ', '')
+        # 12 caracteres persona moral, 13 persona física (letras, fecha AAMMDD y homoclave).
+        if value and not re.fullmatch(r'[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}', value):
+            raise serializers.ValidationError('RFC inválido: 3 o 4 letras, fecha AAMMDD y homoclave (12 o 13 caracteres).')
+        return value
+
     def to_representation(self, instance):
         # Un cliente dado de alta en Inventario todavía no tiene datos de cobranza.
         if not hasattr(instance, 'cartera'):
@@ -67,7 +80,11 @@ class ClienteCarteraSerializer(serializers.ModelSerializer):
     def _guardar_cartera(self, cliente, datos):
         perfil, _ = ClienteCartera.objects.get_or_create(cliente=cliente)
         for campo, valor in datos.items():
-            setattr(perfil, campo, _texto(valor) if campo == 'celular' else valor)
+            if campo in ('celular', 'domicilio'):
+                valor = _texto(valor)
+            elif campo == 'rfc':
+                valor = _texto(valor).upper().replace(' ', '')
+            setattr(perfil, campo, valor)
         perfil.save()
         cliente.cartera = perfil
 
@@ -152,6 +169,17 @@ class MovimientoCarteraSerializer(serializers.ModelSerializer):
         return super().update(instance, validated_data)
 
 
+class AplicacionPagoSerializer(serializers.Serializer):
+    """Parte del pago descontada de una nota; `salida_id` nulo = del saldo al corte."""
+    salida_id = serializers.IntegerField(allow_null=True)
+    monto = serializers.DecimalField(max_digits=18, decimal_places=2)
+
+    def validate_monto(self, value):
+        if value <= 0:
+            raise serializers.ValidationError('El monto debe ser mayor que cero.')
+        return value
+
+
 class PagoClienteSerializer(MovimientoCarteraSerializer):
     tipo_display = serializers.CharField(source='get_tipo_display', read_only=True)
     # Sin cliente = pago por identificar: no mueve ningún saldo hasta asignarlo.
@@ -168,6 +196,9 @@ class PagoClienteSerializer(MovimientoCarteraSerializer):
     # Con ingreso de Tesorería, fecha y monto salen de él.
     fecha = serializers.DateField(required=False)
     monto = serializers.DecimalField(max_digits=18, decimal_places=2, required=False)
+    # Notas de las que se descuenta (opcional), ver _preparar_aplicaciones(): sin
+    # la clave se conserva lo aplicado; [] lo quita y todo va a lo más antiguo.
+    aplicaciones = AplicacionPagoSerializer(many=True, required=False)
 
     class Meta:
         model = PagoCliente
@@ -175,9 +206,20 @@ class PagoClienteSerializer(MovimientoCarteraSerializer):
         validators = []
         fields = MovimientoCarteraSerializer.COMUNES + [
             'tipo', 'tipo_display', 'referencia', 'ingreso_tesoreria', 'ingreso_tesoreria_id',
-            'por_identificar', 'identificado_por', 'identificado_en',
+            'por_identificar', 'identificado_por', 'identificado_en', 'aplicaciones',
         ]
         read_only_fields = MovimientoCarteraSerializer.SOLO_LECTURA
+
+    def to_representation(self, instance):
+        datos = super().to_representation(instance)
+        datos['aplicaciones'] = [
+            {
+                'salida_id': a.salida_id, 'monto': f'{a.monto:.2f}',
+                'nota': (a.salida.notas or f'Salida {a.salida.folio_de_salida}') if a.salida_id else 'Saldo al corte',
+            }
+            for a in instance.aplicaciones.all()
+        ]
+        return datos
 
     def get_ingreso_tesoreria(self, obj):
         ingreso = obj.ingreso_tesoreria
@@ -222,6 +264,99 @@ class PagoClienteSerializer(MovimientoCarteraSerializer):
 
     def validate_referencia(self, value):
         return _texto(value)
+
+    def _preparar_aplicaciones(self, validated_data, instance=None):
+        """
+        Lo que se descuenta de cada nota del cliente en la empresa del pago:
+        sin repetir nota, cada parte cabe en lo que la nota aún no tiene
+        aplicado de otros pagos, la nota no es posterior al pago y las partes
+        no pasan del monto (el resto va a lo más antiguo). Sin la clave se
+        revisa lo ya aplicado solo si cambió cliente, empresa, fecha o monto.
+        Devuelve la lista a guardar, o None si no cambia.
+        """
+        lista = validated_data.pop('aplicaciones', None)
+        if lista is None:
+            if instance is None or not instance.aplicaciones.exists():
+                return None
+            if not any(
+                campo in validated_data and validated_data[campo] != getattr(instance, campo)
+                for campo in ('cliente', 'empresa', 'fecha', 'monto')
+            ):
+                return None
+            lista = list(instance.aplicaciones.values('salida_id', 'monto'))
+        if not lista:
+            return []
+
+        cliente = validated_data.get('cliente', getattr(instance, 'cliente', None))
+        empresa = validated_data.get('empresa', getattr(instance, 'empresa', None))
+        fecha = validated_data.get('fecha', getattr(instance, 'fecha', None))
+        monto = validated_data.get('monto', getattr(instance, 'monto', None))
+        if cliente is None:
+            raise serializers.ValidationError(
+                {'aplicaciones': 'Un pago por identificar no se aplica a notas: primero asígnale el cliente.'}
+            )
+        salidas = [a['salida_id'] for a in lista]
+        if len(set(salidas)) != len(salidas):
+            raise serializers.ValidationError({'aplicaciones': 'Una nota aparece dos veces.'})
+        if sum(a['monto'] for a in lista) > monto:
+            raise serializers.ValidationError(
+                {'aplicaciones': f'Lo aplicado a notas pasa del monto del pago (${monto:,.2f}).'}
+            )
+
+        # Una aplicación a la vez por cliente: dos pagos no ocupan el mismo pendiente.
+        Cliente.objects.select_for_update().get(pk=cliente.pk)
+        excluir = instance.pk if instance else None
+        notas = {p.salida_id: p for p in notas_pendientes(cliente.id, empresa.id, hasta=fecha, excluir_pago=excluir)}
+        otros = AplicacionPago.objects.filter(pago__cancelado=False, pago__cliente=cliente, pago__empresa=empresa)
+        if excluir:
+            otros = otros.exclude(pago_id=excluir)
+        aplicado = dict(otros.values('salida_id').annotate(total=Sum('monto')).values_list('salida_id', 'total'))
+
+        for aplicacion in lista:
+            nota = notas.get(aplicacion['salida_id'])
+            if nota is None:
+                raise serializers.ValidationError({'aplicaciones': (
+                    'El cliente no tiene saldo al corte en esta empresa.' if aplicacion['salida_id'] is None else
+                    'La nota no es una venta de este cliente en esta empresa o es posterior a la fecha del pago.'
+                )})
+            disponible = nota.importe - aplicado.get(aplicacion['salida_id'], 0)
+            if aplicacion['monto'] > disponible:
+                raise serializers.ValidationError({'aplicaciones': (
+                    f'A la nota {nota.nota} le quedan ${max(disponible, 0):,.2f} por aplicar '
+                    f'(importe ${nota.importe:,.2f}, ya aplicado de otros pagos ${nota.importe - disponible:,.2f}).'
+                )})
+        return lista
+
+    def _guardar_aplicaciones(self, pago, lista):
+        """Reemplaza lo aplicado; True si cambió."""
+        if lista is None:
+            return False
+        anterior = sorted((a.salida_id or 0, a.monto) for a in pago.aplicaciones.all())
+        nueva = sorted((a['salida_id'] or 0, a['monto']) for a in lista)
+        pago.aplicaciones.all().delete()
+        AplicacionPago.objects.bulk_create(
+            AplicacionPago(pago=pago, salida_id=a['salida_id'], monto=a['monto']) for a in lista
+        )
+        return anterior != nueva
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            lista = self._preparar_aplicaciones(validated_data)
+            pago = super().create(validated_data)
+            self._guardar_aplicaciones(pago, lista)
+        return pago
+
+    def update(self, instance, validated_data):
+        if instance.cancelado:
+            raise serializers.ValidationError('No se puede editar un movimiento cancelado.')
+        with transaction.atomic():
+            lista = self._preparar_aplicaciones(validated_data, instance)
+            pago = super().update(instance, validated_data)
+            if self._guardar_aplicaciones(pago, lista):
+                pago.editado_por = _usuario_sesion(self)
+                pago.editado_en = timezone.now()
+                pago.save(update_fields=['editado_por', 'editado_en'])
+        return pago
 
 
 class IdentificarPagoSerializer(serializers.Serializer):
@@ -326,6 +461,10 @@ def linea_venta(linea):
         'producto': producto_de(linea),
         'lote': linea.entrada_detalle.lote_general.codigo if linea.entrada_detalle_id and linea.entrada_detalle.lote_general_id else '',
         'camara': linea.camara.nombre if linea.camara_id else '',
+        # Del lote de origen; vacíos en una venta en resguardo (sin lote).
+        'proveedor': (linea.entrada_detalle.proveedor_origen.nombre
+                      if linea.entrada_detalle_id and linea.entrada_detalle.proveedor_origen_id else ''),
+        'factura': linea.factura_proveedor,
         'cajas': linea.cajas,
         'kilos': str(linea.total_kilos),
         'precio_kilo': str(linea.precio_x_kilo) if linea.precio_x_kilo is not None else None,

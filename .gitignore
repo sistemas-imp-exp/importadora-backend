@@ -31,3 +31,6 @@ db.sqlite3-journal
 
 # Windows
 Thumbs.db
+
+# Caché de Vite (si se corre npx vite desde aquí por error)
+.vite/
