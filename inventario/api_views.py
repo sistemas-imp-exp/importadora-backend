@@ -291,6 +291,9 @@ class SalidaViewSet(viewsets.ModelViewSet):
                 | Q(notas__icontains=busqueda)
                 | Q(detalles__producto__talla__icontains=busqueda)
                 | Q(detalles__producto__tipo__icontains=busqueda)
+                # Recibo (lote) de la línea: el propio o, si llegó por traslado, el de origen.
+                | Q(detalles__entrada_detalle__lote_general__codigo__icontains=busqueda)
+                | Q(detalles__entrada_detalle__movimiento_camara_como_destino__entrada_detalle_origen__lote_general__codigo__icontains=busqueda)
             ).distinct()
 
         desde = params.get('desde')
