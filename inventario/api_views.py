@@ -251,6 +251,8 @@ class SalidaViewSet(viewsets.ModelViewSet):
             # descargando TODAS las entradas.
             'detalles__producto',
             'detalles__entrada_detalle__proveedor_origen',
+            'detalles__entrada_detalle__lote_general',
+            'detalles__entrada_detalle__entrada',
             'detalles__verificacion_cartera__usuario',
             'detalles__retiros',
             'detalles__retiro_de__salida',
