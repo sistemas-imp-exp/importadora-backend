@@ -1180,6 +1180,7 @@ class ExcelTablasApiTests(APITestCase):
         cliente = Cliente.objects.create(nombre="HERAY")
         camara = Camara.objects.create(nombre="CAM-XLS", tipo=Camara.TIPO_PROPIA)
         producto = Producto.objects.create(talla="21-25", tipo="FREEZADO")
+        lotes = []
         for fecha, factura in (("2026-03-01", "F-MAR"), ("2026-04-01", "F-ABR")):
             entrada = Entrada.objects.create(fecha=fecha, empresa=empresa_importadora())
             lote = EntradaDetalle.objects.create(
@@ -1189,10 +1190,16 @@ class ExcelTablasApiTests(APITestCase):
                     codigo=f"IMP-{factura[2:]}", camara=camara, fecha_recibo=fecha,
                 ),
             )
+            lotes.append(lote)
         salida = Salida.objects.create(folio_de_salida="V-XLS", cliente=cliente, fecha="2026-04-05")
         SalidaDetalle.objects.create(
             salida=salida, producto=producto, entrada_detalle=lote, camara=camara, cajas=2,
             total_kilos=Decimal("40.00"), precio_x_kilo=Decimal("100.00"), total_venta=Decimal("4000.00"),
+        )
+        # Otra línea de la misma salida, de otro recibo (IMP-MAR).
+        SalidaDetalle.objects.create(
+            salida=salida, producto=producto, entrada_detalle=lotes[0], camara=camara, cajas=1,
+            total_kilos=Decimal("20.00"),
         )
 
     def _hojas(self, url):
@@ -1211,9 +1218,29 @@ class ExcelTablasApiTests(APITestCase):
         self.assertEqual(hojas["Entradas"][1][12], "Sí")  # con salidas
         self.assertEqual(hojas["Detalle"][1][7], "L-F-ABR")
 
-    def test_salidas_con_totales_y_detalle(self):
+    def test_salidas_una_hoja_por_linea_como_la_tabla(self):
         hojas = self._hojas("/api/inventario/salidas/excel/?busqueda=heray")
 
-        self.assertEqual(hojas["Salidas"][1][1:8], ("V-XLS", "HERAY", None, 1, 2, 40, 4000))
-        self.assertEqual(hojas["Detalle"][0][7], "Recibo")
-        self.assertEqual(hojas["Detalle"][1][4:9], ("L-F-ABR", "CACESA", "CAM-XLS", "IMP-ABR", "—"))
+        self.assertEqual(list(hojas), ["Salidas"])
+        self.assertEqual(hojas["Salidas"][0][6], "Recibo (lote)")
+        # Coincide por cliente: todas las líneas de la salida.
+        self.assertEqual(sorted(f[6] for f in hojas["Salidas"][1:-1]), ["IMP-ABR", "IMP-MAR"])
+        self.assertEqual(hojas["Salidas"][-1][1:13], ("Total (2 líneas)",) + (None,) * 9 + (3, 60))
+
+    def test_salidas_por_recibo_solo_esas_lineas(self):
+        hojas = self._hojas("/api/inventario/salidas/excel/?busqueda=imp-abr")
+
+        self.assertEqual(
+            hojas["Salidas"][1][1:15],
+            ("21-25", "FREEZADO", 20, "CACESA", "CAM-XLS", "IMP-ABR", "L-F-ABR", "V-XLS", "HERAY", None, 2, 40, 100, 4000),
+        )
+        self.assertEqual(hojas["Salidas"][-1][1], "Total (1 líneas)")
+
+    def test_salidas_de_un_recibo(self):
+        respuesta = self.client.get("/api/inventario/salidas/por-recibo/?recibo=IMP-MAR")
+
+        self.assertEqual(respuesta.status_code, 200)
+        self.assertEqual(respuesta.data["total_kilos"], "20.000")
+        self.assertEqual([(l["folio_de_salida"], l["cliente"], l["cajas"]) for l in respuesta.data["lineas"]],
+                         [("V-XLS", "HERAY", 1)])
+        self.assertEqual(self.client.get("/api/inventario/salidas/por-recibo/").status_code, 400)

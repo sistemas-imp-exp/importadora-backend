@@ -2,8 +2,9 @@
 Excel de las tablas de Entradas y Salidas: lo que se ve en pantalla con los
 mismos filtros (búsqueda, fechas, empresa), sin paginar.
 
-Cada libro trae dos hojas: una fila por documento, con las columnas de la
-tabla, y "Detalle" con una fila por línea (lo que en pantalla se despliega).
+Entradas trae dos hojas: una fila por documento, con las columnas de la tabla,
+y "Detalle" con una fila por línea (lo que en pantalla se despliega). Salidas,
+plana como su tabla, trae una sola: una fila por línea con lo que se ve al buscar.
 Las columnas siguen a EntradasTable.tsx / SalidasTable.tsx: cambiar ambos juntos.
 """
 from decimal import Decimal
@@ -100,54 +101,65 @@ def libro_entradas(entradas):
     return wb
 
 
-def libro_salidas(salidas):
-    """`salidas`: queryset de SalidaViewSet."""
-    resumen, detalle = [], []
+def lineas_visibles(salida, busqueda):
+    """
+    Líneas de la salida que se ven con la búsqueda (igual que SalidasTable.tsx):
+    todas si coincide con el folio, cliente o nota; si no, solo las que coinciden
+    por recibo, talla o tipo (o todas si ninguna, p. ej. recibo de origen de un traslado).
+    """
+    lineas = list(salida.detalles.all())
+    q = (busqueda or "").strip().lower()
+    if not q:
+        return lineas
+
+    def contiene(texto):
+        return q in (texto or "").lower()
+
+    if contiene(salida.folio_de_salida) or contiene(salida.cliente.nombre if salida.cliente_id else "") or contiene(salida.notas):
+        return lineas
+    coinciden = [
+        d for d in lineas
+        if contiene(d.producto.talla) or contiene(d.producto.tipo)
+        or (d.entrada_detalle_id and contiene(d.entrada_detalle.documento_origen["recibo"]))
+    ]
+    return coinciden or lineas
+
+
+def libro_salidas(salidas, busqueda=""):
+    """`salidas`: queryset de SalidaViewSet. Una fila por línea, como la tabla (sin hoja de detalle)."""
+    filas = []
     tot_cajas, tot_kilos, tot_venta = 0, Decimal("0"), Decimal("0")
     for s in salidas:
-        lineas = list(s.detalles.all())
-        cajas = sum(d.cajas for d in lineas)
-        kilos = sum((d.total_kilos for d in lineas), Decimal("0"))
-        venta = sum((d.total_venta or Decimal("0") for d in lineas), Decimal("0"))
-        sin_precio = sum(1 for d in lineas if not d.total_venta)
         cliente = s.cliente.nombre if s.cliente_id else "—"
-        resumen.append([
-            s.fecha, s.folio_de_salida or "Sin salida (resguardo)", cliente, s.notas or "", len(lineas), cajas,
-            _numero(kilos), _numero(venta) if venta else None, sin_precio or None,
-        ])
-        tot_cajas += cajas
-        tot_kilos += kilos
-        tot_venta += venta
-        for d in lineas:
+        for d in lineas_visibles(s, busqueda):
             origen = d.entrada_detalle
-            detalle.append([
-                s.fecha, s.folio_de_salida or "Sin salida (resguardo)", cliente, f"{d.producto.talla} {d.producto.tipo}",
-                origen.lote_proveedor if origen else "—",
+            notas = " · ".join(x for x in (s.notas, d.notas) if x)
+            filas.append([
+                s.fecha, d.producto.talla, d.producto.tipo,
+                _numero(origen.peso_por_caja) if origen else None,
                 origen.proveedor_origen.nombre if origen and origen.proveedor_origen_id else "—",
                 d.camara.nombre if d.camara_id else "—",
                 # Recibo de la cámara de donde salió: el de destino si el lote llegó por traslado.
                 (origen.documento_origen["recibo"] or "—") if origen else "—",
-                d.factura_proveedor or "—",
-                d.cajas, _numero(d.total_kilos), _numero(d.precio_x_kilo), _numero(d.total_venta), d.notas or "",
+                (origen.lote_proveedor or "—") if origen else "—",
+                s.folio_de_salida or "Sin salida (resguardo)", cliente, notas,
+                d.cajas, _numero(d.total_kilos), _numero(d.precio_x_kilo),
+                None if s.folio_retiro else _numero(d.total_venta),
+                d.factura_proveedor or "",
             ])
+            tot_cajas += d.cajas
+            tot_kilos += d.total_kilos
+            tot_venta += Decimal("0") if s.folio_retiro else (d.total_venta or Decimal("0"))
 
     wb = Workbook()
     _hoja(
         wb.active, "Salidas",
-        ["Fecha", "Folio", "Cliente", "Nota de salida", "Líneas", "Cajas", "Total kg", "Total venta",
-         "Líneas sin precio"],
-        resumen,
-        {1: FORMATO_FECHA, 6: "#,##0", 7: FORMATO_KG, 8: FORMATO_PESOS},
-        [12, 16, 26, 30, 8, 10, 13, 15, 15],
-        total=[None, f"Total ({len(resumen)} salidas)", None, None, None,
-               tot_cajas, _numero(tot_kilos), _numero(tot_venta), None],
-    )
-    _hoja(
-        wb.create_sheet(), "Detalle",
-        ["Fecha", "Folio", "Cliente", "Producto", "Lote origen", "Proveedor", "Cámara", "Recibo",
-         "Factura proveedor", "Cajas", "Total kg", "Precio/kg", "Total venta", "Nota"],
-        detalle,
-        {1: FORMATO_FECHA, 10: "#,##0", 11: FORMATO_KG, 12: FORMATO_PRECIO_KG, 13: FORMATO_PESOS},
-        [12, 16, 26, 20, 16, 24, 20, 14, 18, 9, 12, 12, 14, 30],
+        ["Fecha", "Talla", "Tipo", "Peso por caja", "Proveedor", "Cámara", "Recibo (lote)", "Lote proveedor",
+         "Folio de salida", "Cliente", "Notas", "Cajas", "Total kg", "Precio x kilo", "Total venta", "Factura"],
+        filas,
+        {1: FORMATO_FECHA, 4: FORMATO_KG, 12: "#,##0", 13: FORMATO_KG, 14: FORMATO_PRECIO_KG, 15: FORMATO_PESOS},
+        [12, 14, 14, 11, 26, 16, 14, 18, 14, 28, 30, 9, 13, 12, 15, 14],
+        total=[None, f"Total ({len(filas)} líneas)"] + [None] * 9
+        + [tot_cajas, _numero(tot_kilos), None, _numero(tot_venta), None],
     )
     return wb
