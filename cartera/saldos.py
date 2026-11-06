@@ -55,15 +55,15 @@ def saldos_por_cliente(clientes=None, hasta=None):
 
 def ultimos_pagos(clientes=None):
     """
-    {cliente_id: (fecha, monto)} del último pago activo capturado en el
-    sistema (si hay varios ese día, el último capturado).
+    {cliente_id: (fecha, monto)} del último día con pagos activos capturados
+    en el sistema; el monto es el total de ese día, no el último pago individual.
     """
     pagos = PagoCliente.objects.filter(cancelado=False, cliente__isnull=False)
     if clientes is not None:
         pagos = pagos.filter(cliente_id__in=clientes)
     ultimos = {}
-    for pago in pagos.order_by('cliente_id', '-fecha', '-creado').values('cliente_id', 'fecha', 'monto'):
-        ultimos.setdefault(pago['cliente_id'], (pago['fecha'], pago['monto']))
+    for pago in pagos.values('cliente_id', 'fecha').annotate(total=Sum('monto')).order_by('cliente_id', '-fecha'):
+        ultimos.setdefault(pago['cliente_id'], (pago['fecha'], pago['total']))
     return ultimos
 
 

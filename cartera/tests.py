@@ -78,6 +78,12 @@ class SaldosYPagosTests(BaseCartera):
         self.assertEqual(self.client.get(f"/api/cartera/clientes/{self.cliente.id}/").data["ultimo_pago"],
                          {"fecha": HOY.isoformat(), "monto": "300.00"})
 
+    def test_ultimo_pago_suma_los_pagos_del_ultimo_dia(self):
+        self._pago("150")
+        self._pago("200", empresa=self.sel)
+        self.assertEqual(self.client.get(f"/api/cartera/clientes/{self.cliente.id}/").data["ultimo_pago"],
+                         {"fecha": HOY.isoformat(), "monto": "350.00"})
+
     def test_alta_de_cliente_desde_cartera_va_al_catalogo_de_inventario(self):
         r = self.client.post("/api/cartera/clientes/", {"nombre": " heray  ", "celular": "961", "pagare": False,
                                                         "notas": "", "activo": True}, format="json")
