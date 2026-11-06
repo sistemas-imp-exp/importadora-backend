@@ -510,6 +510,13 @@ class SalidaSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['folio_retiro']
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Mantener el orden visual de las líneas tal como se agregaron a la salida,
+        # sin inventar un nuevo identificador ni folio para la presentación.
+        data['detalles'] = sorted(data['detalles'], key=lambda item: item.get('id') or 0)
+        return data
+
     def get_venta_resguardo(self, obj):
         if not obj.folio_retiro:
             return None

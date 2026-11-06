@@ -12,6 +12,7 @@ from security.permissions import AREA_INVENTARIO
 from security.testing import crear_usuario_con_area
 
 from .alertas import clasificar_nivel, obtener_lotes_por_vencer
+from .api_serializers import SalidaSerializer
 from .models import Camara, Cliente, EdicionEntrada, Empresa, Proveedor, Producto, Entrada, EntradaDetalle, LoteGeneral, Salida, SalidaDetalle, MovimientoCamara
 from .testing import empresa_importadora
 
@@ -194,6 +195,34 @@ class SalidaModelTests(TestCase):
         self.assertEqual(salida.detalles.count(), 2)
         facturas = set(salida.detalles.values_list('factura_proveedor', flat=True))
         self.assertEqual(facturas, {"FACT 1070", "FACT 1090"})
+
+    def test_venta_mantiene_el_orden_de_las_lineas_al_serializar(self):
+        salida = Salida.objects.create(
+            folio_de_salida="SI9001", cliente=self.cliente, fecha="2026-02-02",
+        )
+        linea_1 = SalidaDetalle.objects.create(
+            salida=salida,
+            producto=self.producto,
+            entrada_detalle=self.lote_a,
+            camara=self.camara,
+            cajas=10,
+            total_kilos=Decimal("180.00"),
+            factura_proveedor="FACT 101",
+            precio_x_kilo=Decimal("100.00"),
+        )
+        linea_2 = SalidaDetalle.objects.create(
+            salida=salida,
+            producto=self.producto,
+            entrada_detalle=self.lote_b,
+            camara=self.camara,
+            cajas=10,
+            total_kilos=Decimal("180.00"),
+            factura_proveedor="FACT 102",
+            precio_x_kilo=Decimal("110.00"),
+        )
+
+        serializada = SalidaSerializer(salida).data
+        self.assertEqual([d['id'] for d in serializada['detalles']], [linea_1.id, linea_2.id])
 
     def test_venta_parcial_descuenta_cajas_y_kilos_disponibles_del_lote(self):
         # lote_a entró con 60 cajas / 1080.00 kilos (18kg/caja)
